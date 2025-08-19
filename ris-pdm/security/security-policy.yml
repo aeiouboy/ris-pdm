@@ -1,0 +1,164 @@
+# Security Policy for RIS Performance Dashboard
+# This file defines security configurations and policies
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: security-policy
+  namespace: ris-dashboard
+data:
+  # Content Security Policy
+  csp-policy: |
+    default-src 'self';
+    script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net;
+    style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+    font-src 'self' https://fonts.gstatic.com;
+    img-src 'self' data: https: blob:;
+    connect-src 'self' https://dev.azure.com https://*.visualstudio.com wss://localhost:* ws://localhost:*;
+    frame-ancestors 'none';
+    object-src 'none';
+    base-uri 'self';
+    form-action 'self';
+    upgrade-insecure-requests;
+  
+  # HSTS Policy
+  hsts-policy: |
+    max-age=31536000; includeSubDomains; preload
+  
+  # Rate Limiting Configuration
+  rate-limiting: |
+    # API endpoints
+    /api/: 100 requests per minute per IP
+    /api/auth/: 10 requests per minute per IP
+    /api/exports/: 5 requests per minute per IP
+    
+    # Static content
+    /static/: 1000 requests per minute per IP
+    
+    # Health checks (no limit)
+    /health: unlimited
+  
+  # CORS Policy
+  cors-policy: |
+    allowed-origins:
+      - https://ris-dashboard.com
+      - https://api.ris-dashboard.com
+      - https://staging.ris-dashboard.com
+    allowed-methods:
+      - GET
+      - POST
+      - PUT
+      - DELETE
+      - OPTIONS
+    allowed-headers:
+      - Content-Type
+      - Authorization
+      - X-Requested-With
+      - Accept
+      - Origin
+    expose-headers:
+      - X-Total-Count
+      - X-Page-Count
+    max-age: 86400
+    credentials: true
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ris-dashboard-network-policy
+  namespace: ris-dashboard
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  
+  ingress:
+  # Allow ingress from nginx ingress controller
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 3001
+    - protocol: TCP
+      port: 80
+  
+  # Allow internal communication
+  - from:
+    - podSelector:
+        matchLabels:
+          app: backend
+  - from:
+    - podSelector:
+        matchLabels:
+          app: frontend
+  - from:
+    - podSelector:
+        matchLabels:
+          app: redis
+
+  egress:
+  # Allow DNS resolution
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+  
+  # Allow HTTPS traffic to Azure DevOps
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+  
+  # Allow internal communication
+  - to:
+    - podSelector:
+        matchLabels:
+          app: backend
+  - to:
+    - podSelector:
+        matchLabels:
+          app: frontend
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: security-headers
+  namespace: ris-dashboard
+data:
+  security-headers.conf: |
+    # Security headers for nginx
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+    
+    # Content Security Policy
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https: blob:; connect-src 'self' https://dev.azure.com https://*.visualstudio.com wss: ws:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests;" always;
+    
+    # Remove server tokens
+    server_tokens off;
+    
+    # Prevent access to hidden files
+    location ~ /\. {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+    
+    # Prevent access to backup files
+    location ~ ~$ {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }

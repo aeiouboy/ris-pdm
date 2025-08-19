@@ -1,0 +1,38 @@
+{
+  "success": true,
+  "data": [
+    {
+      "name": "User Story",
+      "value": 45,
+      "count": 68,
+      "color": "#3B82F6",
+      "percentage": 45
+    },
+    {
+      "name": "Bug",
+      "value": 15,
+      "count": 23,
+      "color": "#EF4444",
+      "percentage": 15
+    },
+    {
+      "name": "Task",
+      "value": 25,
+      "count": 38,
+      "color": "#10B981",
+      "percentage": 25
+    },
+    {
+      "name": "Epic",
+      "value": 15,
+      "count": 22,
+      "color": "#8B5CF6",
+      "percentage": 15
+    }
+  ],
+  "metadata": {
+    "totalItems": 151,
+    "period": "current-sprint",
+    "lastUpdated": "2024-01-15T12:00:00Z"
+  }
+}

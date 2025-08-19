@@ -1,0 +1,17 @@
+{
+  "success": true,
+  "data": [
+    { "sprint": "Sprint 1", "velocity": 28, "commitment": 30, "completed": 28 },
+    { "sprint": "Sprint 2", "velocity": 32, "commitment": 32, "completed": 32 },
+    { "sprint": "Sprint 3", "velocity": 30, "commitment": 35, "completed": 30 },
+    { "sprint": "Sprint 4", "velocity": 35, "commitment": 33, "completed": 35 },
+    { "sprint": "Sprint 5", "velocity": 33, "commitment": 35, "completed": 33 },
+    { "sprint": "Sprint 6", "velocity": 37, "commitment": 36, "completed": 37 }
+  ],
+  "metadata": {
+    "averageVelocity": 32.5,
+    "velocityTrend": 8.2,
+    "predictability": 91.7,
+    "period": "last-6-sprints"
+  }
+}

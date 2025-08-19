@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "appName": {
+      "value": "ris-dashboard"
+    },
+    "location": {
+      "value": "East US"
+    },
+    "skuName": {
+      "value": "P1V2"
+    },
+    "azureDevOpsOrg": {
+      "value": "${AZURE_DEVOPS_ORG}"
+    },
+    "azureDevOpsProject": {
+      "value": "${AZURE_DEVOPS_PROJECT}"
+    },
+    "azureDevOpsPat": {
+      "value": "${AZURE_DEVOPS_PAT}"
+    },
+    "redisConnectionString": {
+      "value": "${REDIS_CONNECTION_STRING}"
+    },
+    "databaseConnectionString": {
+      "value": "${DATABASE_CONNECTION_STRING}"
+    }
+  }
+}

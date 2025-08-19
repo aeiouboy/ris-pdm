@@ -1,0 +1,104 @@
+version: '3.8'
+
+services:
+  # Redis for caching and session storage
+  redis:
+    image: redis:7-alpine
+    container_name: ris-redis-dev
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - ris-network
+
+  # Backend API service
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: ris-backend-dev
+    ports:
+      - "3001:3001"
+      - "9229:9229"  # Debug port
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+      - CORS_ORIGIN=http://localhost:5173
+      - REDIS_URL=redis://redis:6379
+      - AZURE_DEVOPS_ORG=${AZURE_DEVOPS_ORG}
+      - AZURE_DEVOPS_PROJECT=${AZURE_DEVOPS_PROJECT}
+      - AZURE_DEVOPS_PAT=${AZURE_DEVOPS_PAT}
+      - RATE_LIMIT_WINDOW_MS=900000
+      - RATE_LIMIT_MAX_REQUESTS=1000
+      - REALTIME_POLLING_INTERVAL=30000
+      - ENABLE_INCREMENTAL_UPDATES=true
+      - MAX_WEBSOCKET_CLIENTS=100
+      - ENABLE_CHANGE_DETECTION=true
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+      - backend_logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - ris-network
+    restart: unless-stopped
+
+  # Frontend React application
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: ris-frontend-dev
+    ports:
+      - "5173:5173"
+    environment:
+      - NODE_ENV=development
+      - VITE_API_BASE_URL=http://localhost:3001
+      - VITE_WS_URL=ws://localhost:3001
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - ris-network
+    restart: unless-stopped
+
+  # Nginx reverse proxy (optional for development)
+  nginx:
+    image: nginx:alpine
+    container_name: ris-nginx-dev
+    ports:
+      - "8080:80"
+    volumes:
+      - ./docker/nginx/dev.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - ris-network
+    restart: unless-stopped
+    profiles:
+      - with-proxy
+
+volumes:
+  redis_data:
+    driver: local
+  backend_logs:
+    driver: local
+
+networks:
+  ris-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

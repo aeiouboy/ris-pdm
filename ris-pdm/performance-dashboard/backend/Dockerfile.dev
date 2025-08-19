@@ -1,0 +1,30 @@
+# Development Dockerfile for Performance Dashboard Backend
+FROM node:18-alpine
+
+# Install additional tools for development
+RUN apk add --no-cache curl postgresql-client
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies including devDependencies for development
+RUN npm ci
+
+# Copy source code
+COPY . .
+
+# Create necessary directories
+RUN mkdir -p logs
+
+# Expose ports
+EXPOSE 3001 9229
+
+# Add health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:3001/health || exit 1
+
+# Default command for development (with debugging support)
+CMD ["npm", "run", "dev"]

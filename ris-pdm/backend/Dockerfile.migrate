@@ -1,0 +1,41 @@
+# Database Migration Dockerfile
+FROM node:18-alpine
+
+# Install PostgreSQL client
+RUN apk add --no-cache postgresql-client
+
+# Create app directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci --only=production
+
+# Copy migration files
+COPY migrations/ ./migrations/
+COPY seeds/ ./seeds/
+COPY src/scripts/migrate.js ./migrate.js
+
+# Create migration script
+RUN cat > run-migrations.sh << 'EOF'
+#!/bin/sh
+set -e
+
+echo "Waiting for database to be ready..."
+until pg_isready -h ${DATABASE_HOST:-postgres} -p ${DATABASE_PORT:-5432} -U ${POSTGRES_USER:-ris_user}; do
+  echo "Database is not ready, waiting..."
+  sleep 2
+done
+
+echo "Database is ready, running migrations..."
+node migrate.js
+
+echo "Migrations completed successfully"
+EOF
+
+RUN chmod +x run-migrations.sh
+
+# Default command
+CMD ["./run-migrations.sh"]

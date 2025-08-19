@@ -1,0 +1,256 @@
+# Logging Configuration for RIS Performance Dashboard
+
+# Fluent Bit configuration for log collection
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-config
+  namespace: ris-dashboard
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush         1
+        Log_Level     info
+        Daemon        off
+        Parsers_File  parsers.conf
+        HTTP_Server   On
+        HTTP_Listen   0.0.0.0
+        HTTP_Port     2020
+
+    [INPUT]
+        Name              tail
+        Path              /var/log/containers/*.log
+        Parser            docker
+        Tag               kubernetes.*
+        Refresh_Interval  5
+        Mem_Buf_Limit     50MB
+        Skip_Long_Lines   On
+
+    [INPUT]
+        Name              systemd
+        Tag               systemd.*
+        Systemd_Filter    _SYSTEMD_UNIT=docker.service
+
+    [FILTER]
+        Name                kubernetes
+        Match               kubernetes.*
+        Kube_URL            https://kubernetes.default.svc:443
+        Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
+        Kube_Tag_Prefix     kubernetes.var.log.containers.
+        Merge_Log           On
+        Keep_Log            Off
+        K8S-Logging.Parser  On
+        K8S-Logging.Exclude On
+
+    [FILTER]
+        Name                nest
+        Match               kubernetes.*
+        Operation           lift
+        Nested_under        kubernetes
+        Add_prefix          kubernetes_
+
+    [FILTER]
+        Name                modify
+        Match               kubernetes.*
+        Remove              kubernetes_pod_id
+        Remove              kubernetes_docker_id
+        Remove              kubernetes_container_hash
+
+    [OUTPUT]
+        Name                loki
+        Match               kubernetes.*
+        Host                loki
+        Port                3100
+        Labels              job=fluentbit
+        auto_kubernetes_labels on
+
+    [OUTPUT]
+        Name                stdout
+        Match               *
+        Format              json_lines
+
+  parsers.conf: |
+    [PARSER]
+        Name   docker
+        Format json
+        Time_Key time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L
+        Time_Keep On
+
+    [PARSER]
+        Name        syslog
+        Format      regex
+        Regex       ^\<(?<pri>[0-9]+)\>(?<time>[^ ]* {1,2}[^ ]* [^ ]*) (?<host>[^ ]*) (?<ident>[a-zA-Z0-9_\/\.\-]*)(?:\[(?<pid>[0-9]+)\])?(?:[^\:]*\:)? *(?<message>.*)$
+        Time_Key    time
+        Time_Format %b %d %H:%M:%S
+
+    [PARSER]
+        Name        ris-backend
+        Format      regex
+        Regex       ^\[(?<timestamp>[^\]]*)\] (?<level>\w+): (?<message>.*)$
+        Time_Key    timestamp
+        Time_Format %Y-%m-%d %H:%M:%S
+
+---
+# Log rotation configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logrotate-config
+  namespace: ris-dashboard
+data:
+  logrotate.conf: |
+    # Global settings
+    daily
+    missingok
+    rotate 14
+    compress
+    notifempty
+    create 644 root root
+    
+    # Application logs
+    /app/logs/*.log {
+        daily
+        missingok
+        rotate 30
+        compress
+        delaycompress
+        notifempty
+        create 644 nodejs nodejs
+        postrotate
+            /usr/bin/killall -USR1 node || true
+        endscript
+    }
+    
+    # Nginx logs
+    /var/log/nginx/*.log {
+        daily
+        missingok
+        rotate 14
+        compress
+        delaycompress
+        notifempty
+        create 644 nginx nginx
+        postrotate
+            /usr/bin/killall -USR1 nginx || true
+        endscript
+    }
+
+---
+# Application metrics configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metrics-config
+  namespace: ris-dashboard
+data:
+  metrics.js: |
+    // Custom metrics for RIS Dashboard
+    const promClient = require('prom-client');
+    
+    // Create a Registry
+    const register = new promClient.Registry();
+    
+    // Add default metrics
+    promClient.collectDefaultMetrics({ register });
+    
+    // Custom metrics
+    const httpRequestDuration = new promClient.Histogram({
+      name: 'http_request_duration_seconds',
+      help: 'Duration of HTTP requests in seconds',
+      labelNames: ['method', 'route', 'status_code'],
+      buckets: [0.1, 0.5, 1, 2, 5, 10]
+    });
+    
+    const httpRequestsTotal = new promClient.Counter({
+      name: 'http_requests_total',
+      help: 'Total number of HTTP requests',
+      labelNames: ['method', 'route', 'status_code']
+    });
+    
+    const azureApiRequestsTotal = new promClient.Counter({
+      name: 'azure_api_requests_total',
+      help: 'Total number of Azure DevOps API requests',
+      labelNames: ['endpoint', 'status']
+    });
+    
+    const azureApiRequestsRemaining = new promClient.Gauge({
+      name: 'azure_api_requests_remaining',
+      help: 'Remaining Azure DevOps API requests'
+    });
+    
+    const websocketConnectionsTotal = new promClient.Gauge({
+      name: 'websocket_connections_total',
+      help: 'Total number of active WebSocket connections'
+    });
+    
+    const cacheHitRate = new promClient.Gauge({
+      name: 'cache_hit_rate',
+      help: 'Cache hit rate percentage'
+    });
+    
+    const authFailedAttemptsTotal = new promClient.Counter({
+      name: 'auth_failed_attempts_total',
+      help: 'Total number of failed authentication attempts',
+      labelNames: ['reason']
+    });
+    
+    // Register metrics
+    register.registerMetric(httpRequestDuration);
+    register.registerMetric(httpRequestsTotal);
+    register.registerMetric(azureApiRequestsTotal);
+    register.registerMetric(azureApiRequestsRemaining);
+    register.registerMetric(websocketConnectionsTotal);
+    register.registerMetric(cacheHitRate);
+    register.registerMetric(authFailedAttemptsTotal);
+    
+    module.exports = {
+      register,
+      httpRequestDuration,
+      httpRequestsTotal,
+      azureApiRequestsTotal,
+      azureApiRequestsRemaining,
+      websocketConnectionsTotal,
+      cacheHitRate,
+      authFailedAttemptsTotal
+    };
+
+---
+# Alert configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alert-config
+  namespace: ris-dashboard
+data:
+  alertmanager.yml: |
+    global:
+      smtp_smarthost: 'smtp.gmail.com:587'
+      smtp_from: 'alerts@ris-dashboard.com'
+    
+    route:
+      group_by: ['alertname']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 1h
+      receiver: 'web.hook'
+    
+    receivers:
+    - name: 'web.hook'
+      slack_configs:
+      - api_url: '${SLACK_WEBHOOK_URL}'
+        channel: '#alerts'
+        title: 'RIS Dashboard Alert'
+        text: '{{ range .Alerts }}{{ .Annotations.summary }}: {{ .Annotations.description }}{{ end }}'
+      
+      email_configs:
+      - to: '${ALERT_EMAIL}'
+        subject: 'RIS Dashboard Alert: {{ .GroupLabels.alertname }}'
+        body: |
+          {{ range .Alerts }}
+          Alert: {{ .Annotations.summary }}
+          Description: {{ .Annotations.description }}
+          Severity: {{ .Labels.severity }}
+          Time: {{ .StartsAt }}
+          {{ end }}

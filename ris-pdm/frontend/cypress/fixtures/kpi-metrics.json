@@ -1,0 +1,29 @@
+{
+  "success": true,
+  "data": {
+    "pl": {
+      "value": 1250000,
+      "trend": 15.2,
+      "trendValue": "+$180K",
+      "previousValue": 1070000
+    },
+    "velocity": {
+      "value": 32,
+      "trend": 12.5,
+      "trendValue": "+12%",
+      "previousValue": 28.5
+    },
+    "bugs": {
+      "value": 5,
+      "trend": -8.3,
+      "trendValue": "-8%",
+      "previousValue": 5.4
+    },
+    "satisfaction": {
+      "value": 4.2,
+      "trend": 0.3,
+      "trendValue": "+0.3",
+      "previousValue": 3.9
+    }
+  }
+}

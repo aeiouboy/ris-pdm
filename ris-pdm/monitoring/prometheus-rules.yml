@@ -1,0 +1,113 @@
+groups:
+  - name: ris-dashboard.rules
+    rules:
+      # High CPU usage
+      - alert: HighCPUUsage
+        expr: container_cpu_usage_rate{container_label_app=~"backend|frontend"} > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          service: ris-dashboard
+        annotations:
+          summary: "High CPU usage detected"
+          description: "{{ $labels.container_label_app }} is using {{ $value | humanizePercentage }} CPU for more than 5 minutes"
+
+      # High memory usage
+      - alert: HighMemoryUsage
+        expr: container_memory_usage_bytes{container_label_app=~"backend|frontend"} / container_spec_memory_limit_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          service: ris-dashboard
+        annotations:
+          summary: "High memory usage detected"
+          description: "{{ $labels.container_label_app }} is using {{ $value | humanizePercentage }} of available memory for more than 5 minutes"
+
+      # Service down
+      - alert: ServiceDown
+        expr: up{job=~"ris-backend|ris-frontend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: ris-dashboard
+        annotations:
+          summary: "Service is down"
+          description: "{{ $labels.job }} has been down for more than 1 minute"
+
+      # High response time
+      - alert: HighResponseTime
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="ris-backend"}[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: ris-dashboard
+        annotations:
+          summary: "High response time detected"
+          description: "95th percentile response time is {{ $value }}s for more than 5 minutes"
+
+      # High error rate
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{job="ris-backend",status=~"5.."}[5m]) / rate(http_requests_total{job="ris-backend"}[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+          service: ris-dashboard
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }} for more than 5 minutes"
+
+      # Redis connection issues
+      - alert: RedisConnectionFailed
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: ris-dashboard
+        annotations:
+          summary: "Redis connection failed"
+          description: "Unable to connect to Redis for more than 1 minute"
+
+      # Disk space low
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 10
+        for: 5m
+        labels:
+          severity: warning
+          service: ris-dashboard
+        annotations:
+          summary: "Disk space is low"
+          description: "Available disk space is {{ $value }}% on {{ $labels.instance }}"
+
+      # Too many failed login attempts
+      - alert: TooManyFailedLogins
+        expr: increase(auth_failed_attempts_total[5m]) > 10
+        for: 1m
+        labels:
+          severity: warning
+          service: ris-dashboard
+          security: true
+        annotations:
+          summary: "Too many failed login attempts"
+          description: "{{ $value }} failed login attempts in the last 5 minutes"
+
+      # Azure DevOps API rate limit approaching
+      - alert: AzureAPIRateLimitHigh
+        expr: azure_devops_api_requests_remaining < 100
+        for: 1m
+        labels:
+          severity: warning
+          service: ris-dashboard
+        annotations:
+          summary: "Azure DevOps API rate limit approaching"
+          description: "Only {{ $value }} API requests remaining for Azure DevOps"
+
+      # WebSocket connection issues
+      - alert: WebSocketConnectionsHigh
+        expr: websocket_connections_total > 800
+        for: 5m
+        labels:
+          severity: warning
+          service: ris-dashboard
+        annotations:
+          summary: "High number of WebSocket connections"
+          description: "{{ $value }} WebSocket connections active, approaching limit"
