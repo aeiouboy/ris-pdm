@@ -19,7 +19,7 @@ class WebSocketService {
     
     // Configuration
     this.config = {
-      serverUrl: import.meta.env.VITE_WEBSOCKET_URL || window.location.origin,
+      serverUrl: 'http://localhost:6000',
       autoConnect: true,
       reconnection: true,
       reconnectionDelay: 1000,
@@ -30,52 +30,53 @@ class WebSocketService {
   }
 
   /**
-   * Initialize and connect to WebSocket server
+   * Establish WebSocket connection to server
    * @returns {Promise<boolean>} Connection success status
    */
   async connect() {
-    if (this.socket && this.isConnected) {
-      console.log('🔌 WebSocket already connected');
+    if (this.isConnected && this.socket?.connected) {
+      console.log('🔌 Already connected to WebSocket server');
       return true;
     }
 
     try {
-      console.log(`🔌 Connecting to WebSocket server: ${this.config.serverUrl}`);
+      console.log('🔌 Connecting to WebSocket server at', this.config.serverUrl);
       
+      // Create socket connection
       this.socket = io(this.config.serverUrl, {
-        autoConnect: this.config.autoConnect,
+        transports: ['websocket', 'polling'],
         reconnection: this.config.reconnection,
         reconnectionDelay: this.config.reconnectionDelay,
         reconnectionDelayMax: this.config.reconnectionDelayMax,
         timeout: this.config.timeout,
-        forceNew: this.config.forceNew,
-        transports: ['websocket', 'polling']
+        forceNew: this.config.forceNew
       });
 
+      // Set up event handlers
       this.setupEventHandlers();
-      
-      // Wait for connection
-      return new Promise((resolve) => {
+
+      // Wait for connection to establish
+      return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
-          console.error('🔌 WebSocket connection timeout');
-          resolve(false);
+          console.error('🔌 Connection timeout');
+          reject(new Error('Connection timeout'));
         }, this.config.timeout);
 
-        this.socket.once('connect', () => {
+        this.socket.on('connect', () => {
           clearTimeout(timeout);
-          this.handleConnection();
           resolve(true);
         });
 
-        this.socket.once('connect_error', (error) => {
+        this.socket.on('connect_error', (error) => {
           clearTimeout(timeout);
-          console.error('🔌 WebSocket connection error:', error);
-          resolve(false);
+          console.error('🔌 Connection failed:', error);
+          reject(error);
         });
       });
-      
+
     } catch (error) {
-      console.error('🔌 Failed to connect to WebSocket:', error);
+      console.error('🔌 Failed to create WebSocket connection:', error);
+      this.isConnected = false;
       return false;
     }
   }
@@ -214,29 +215,32 @@ class WebSocketService {
 
   /**
    * Subscribe to metrics updates
-   * @param {string} type - Metrics type ('dashboard', 'individual', 'workitems', etc.)
-   * @param {function} callback - Callback function for updates
-   * @param {object} options - Subscription options
+   * @param {string} type - Metrics type ('all', 'user', 'team', etc.)
+   * @param {function} callback - Callback function to handle updates
+   * @param {object} options - Subscription options (userId, teamId, etc.)
    * @returns {string} Subscription ID for unsubscribing
    */
   subscribeToMetrics(type = 'all', callback, options = {}) {
-    if (!this.socket) {
-      console.warn('🔌 WebSocket not connected, cannot subscribe to metrics');
+    if (!callback || typeof callback !== 'function') {
+      console.error('📊 Invalid callback provided for metrics subscription');
       return null;
     }
 
-    const { userId, teamId } = options;
-    const subscriptionKey = this.generateSubscriptionKey(type, userId, teamId);
+    // Generate unique subscription key
+    const subscriptionKey = this.generateSubscriptionKey(type, options.userId, options.teamId);
     
     // Store callback
     this.subscriptions.set(subscriptionKey, callback);
     
-    // Send subscription request to server
-    this.socket.emit('subscribe-metrics', {
-      type,
-      userId,
-      teamId
-    });
+    // Send subscription request to server if connected
+    if (this.socket && this.isConnected) {
+      this.socket.emit('subscribe-metrics', {
+        type: type,
+        userId: options.userId || null,
+        teamId: options.teamId || null,
+        filters: options.filters || {}
+      });
+    }
     
     console.log(`📊 Subscribed to metrics: ${subscriptionKey}`);
     return subscriptionKey;
@@ -363,7 +367,7 @@ class WebSocketService {
    * @returns {boolean} Connection status
    */
   getConnectionStatus() {
-    return this.isConnected;
+    return this.isConnected && this.socket?.connected;
   }
 
   /**

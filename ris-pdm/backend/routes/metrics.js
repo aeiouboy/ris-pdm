@@ -5,6 +5,8 @@ const logger = require('../utils/logger');
 const NodeCache = require('node-cache');
 const AzureDevOpsService = require('../src/services/azureDevOpsService');
 const MetricsCalculatorService = require('../src/services/metricsCalculator');
+const BugClassificationService = require('../src/services/bugClassificationService');
+const ProjectResolutionService = require('../src/services/projectResolutionService');
 const { azureDevOpsConfig } = require('../src/config/azureDevOpsConfig');
 
 // Cache for metrics data (TTL: 5 minutes)
@@ -19,7 +21,9 @@ const RATE_LIMIT = {
 
 // Initialize Azure DevOps and Metrics services
 const azureService = new AzureDevOpsService(azureDevOpsConfig);
-const metricsCalculator = new MetricsCalculatorService(azureService);
+const projectResolver = new ProjectResolutionService(azureService);
+const metricsCalculator = new MetricsCalculatorService(azureService, projectResolver);
+const bugClassificationService = new BugClassificationService(azureService);
 
 /**
  * @route   GET /api/metrics/overview
@@ -79,36 +83,14 @@ router.get('/overview',
           endDate
         });
         
-        // Return fallback data with error indicator
-        overview = {
-          period: { type: period, startDate, endDate },
-          summary: {
-            totalProducts: 0,
-            activeProjects: 0,
-            totalTeamMembers: 0,
-            avgVelocity: 0,
-            avgQualityScore: 0,
-            totalWorkItems: 0,
-            completedWorkItems: 0,
-          },
-          kpis: {
-            deliveryPredictability: 0,
-            teamSatisfaction: 0,
-            codeQuality: 0,
-            defectEscapeRate: 0,
-            cycleTime: 0,
-            leadTime: 0,
-          },
-          trends: { velocity: {}, quality: {}, satisfaction: {} },
-          alerts: [{
-            type: 'error',
-            message: 'Unable to fetch data from Azure DevOps. Please check your configuration.',
-            severity: 'high',
-            timestamp: new Date().toISOString()
-          }],
-          dataSource: 'fallback',
-          error: azureError.message
-        };
+        // Return error response instead of mock data
+        return res.status(503).json({
+          error: 'Azure DevOps service unavailable',
+          message: 'Unable to fetch data from Azure DevOps. Please check your configuration and try again.',
+          details: azureError.message,
+          timestamp: new Date().toISOString(),
+          retryAfter: 60
+        });
       }
 
       const response = {
@@ -174,32 +156,15 @@ router.get('/products/:productId',
           userId: req.user?.id
         });
         
-        // Return fallback data with error indicator
-        metrics = {
+        // Return error response instead of mock data
+        return res.status(503).json({
+          error: 'Azure DevOps service unavailable',
+          message: `Unable to fetch metrics for product ${productId}. Please check your configuration and try again.`,
+          details: azureError.message,
           productId,
-          period: { type: period, sprintId },
-          performance: {
-            velocity: { current: 0, target: 0, trend: 'unknown', history: [] },
-            burndown: { planned: 0, remaining: 0, rate: 0, onTrack: false },
-            quality: { codeQuality: 0, testCoverage: 0, defectDensity: 0, technicalDebt: 0 },
-            delivery: { commitmentReliability: 0, cycleTime: 0, leadTime: 0, throughput: 0 }
-          },
-          workItems: {
-            total: 0, completed: 0, inProgress: 0, blocked: 0,
-            byType: {}, byPriority: {}
-          },
-          team: {
-            size: 0, productivity: 0, collaboration: 0, satisfaction: 0, utilization: 0
-          },
-          risks: [{
-            type: 'system',
-            description: 'Unable to fetch Azure DevOps data',
-            severity: 'high',
-            impact: 'Metrics unavailable'
-          }],
-          dataSource: 'fallback',
-          error: azureError.message
-        };
+          timestamp: new Date().toISOString(),
+          retryAfter: 60
+        });
       }
 
       res.json({
@@ -257,38 +222,15 @@ router.get('/teams/:teamId',
           userId: req.user?.id
         });
         
-        // Return fallback data with error indicator
-        teamMetrics = {
+        // Return error response instead of mock data
+        return res.status(503).json({
+          error: 'Azure DevOps service unavailable',
+          message: `Unable to fetch team metrics for team ${teamId}. Please check your configuration and try again.`,
+          details: azureError.message,
           teamId,
-          period: { type: period },
-          team: {
-            name: 'Unknown Team',
-            size: 0,
-            lead: 'Unknown',
-            members: []
-          },
-          performance: {
-            velocity: 0,
-            productivity: 0,
-            collaboration: 0,
-            satisfaction: 0,
-            utilization: 0
-          },
-          workload: {
-            totalWorkItems: 0,
-            avgWorkItemsPerMember: 0,
-            distribution: 'unknown',
-            bottlenecks: []
-          },
-          skills: {
-            technical: 0,
-            domain: 0,
-            process: 0,
-            gaps: ['Azure DevOps API connection']
-          },
-          dataSource: 'fallback',
-          error: azureError.message
-        };
+          timestamp: new Date().toISOString(),
+          retryAfter: 60
+        });
       }
 
       res.json({
@@ -427,58 +369,15 @@ router.get('/individual/:userId',
           endDate
         });
         
-        // Return fallback data with error indicator
-        const fallbackName = userId ? 
-          userId.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : 
-          'Team Member';
-          
-        individualMetrics = {
+        // Return error response instead of mock data
+        return res.status(503).json({
+          error: 'Azure DevOps service unavailable',
+          message: `Unable to fetch individual metrics for user ${userId}. Please check your configuration and try again.`,
+          details: azureError.message,
           userId,
-          period: { type: period, startDate, endDate },
-          userInfo: {
-            name: fallbackName,
-            email: userId,
-            avatar: null,
-            role: 'Developer'
-          },
-          performance: {
-            taskCompletionRate: 0,
-            storyPointsDelivered: 0,
-            averageVelocity: 0,
-            qualityScore: 0,
-            cycleTime: 0,
-            productivity: 0
-          },
-          quality: {
-            bugsCreated: 0,
-            bugsFixed: 0,
-            bugRatio: 0,
-            codeQuality: 0,
-            testCoverage: 0
-          },
-          workItems: {
-            total: 0,
-            completed: 0,
-            inProgress: 0,
-            backlog: 0,
-            byType: {},
-            byPriority: {}
-          },
-          timeline: [],
-          trends: {
-            velocity: [],
-            quality: [],
-            productivity: []
-          },
-          alerts: [{
-            type: 'error',
-            message: 'Unable to fetch individual data from Azure DevOps',
-            severity: 'high',
-            timestamp: new Date().toISOString()
-          }],
-          dataSource: 'fallback',
-          error: azureError.message
-        };
+          timestamp: new Date().toISOString(),
+          retryAfter: 60
+        });
       }
 
       const response = {
@@ -593,12 +492,14 @@ router.get('/team-members',
         sprintId
       });
       
-      // Return fallback data
-      teamMembers = {
-        members: [],
-        count: 0,
-        error: azureError.message
-      };
+      // Return error response instead of mock data
+      return res.status(503).json({
+        error: 'Azure DevOps service unavailable',
+        message: 'Unable to fetch team members from Azure DevOps. Please check your configuration and try again.',
+        details: azureError.message,
+        timestamp: new Date().toISOString(),
+        retryAfter: 60
+      });
     }
 
     const response = {
@@ -671,39 +572,14 @@ router.get('/kpis',
           sprintId
         });
         
-        // Return fallback KPI data
-        kpis = {
-          pl: {
-            value: 1200000,
-            trend: 15.2,
-            trendValue: '+$180K',
-            period: 'YTD',
-            target: 1000000
-          },
-          velocity: {
-            value: 42,
-            trend: 12,
-            trendValue: '+12%',
-            period: 'Current Sprint',
-            target: 40
-          },
-          bugs: {
-            value: 23,
-            trend: -8,
-            trendValue: '-8%',
-            period: 'Current Sprint',
-            target: 15
-          },
-          satisfaction: {
-            value: 4.2,
-            trend: 0.3,
-            trendValue: '+0.3',
-            period: 'Current Sprint',
-            target: 4.5
-          },
-          dataSource: 'fallback',
-          error: azureError.message
-        };
+        // Return error response instead of mock data
+        return res.status(503).json({
+          error: 'Azure DevOps service unavailable',
+          message: 'Unable to fetch KPI data from Azure DevOps. Please check your configuration and try again.',
+          details: azureError.message,
+          timestamp: new Date().toISOString(),
+          retryAfter: 60
+        });
       }
 
       const response = {
@@ -772,33 +648,14 @@ router.get('/burndown',
           productId
         });
         
-        // Return fallback burndown data
-        const sprintDays = 14;
-        const totalStoryPoints = 42;
-        burndownData = [];
-        
-        for (let day = 0; day <= sprintDays; day++) {
-          const idealRemaining = totalStoryPoints - (totalStoryPoints * day / sprintDays);
-          let actualRemaining;
-          
-          if (day === 0) {
-            actualRemaining = totalStoryPoints;
-          } else if (day <= 3) {
-            actualRemaining = totalStoryPoints - (day * 1.5);
-          } else if (day <= 10) {
-            actualRemaining = totalStoryPoints - (3 * 1.5) - ((day - 3) * 4);
-          } else {
-            actualRemaining = Math.max(0, totalStoryPoints - (3 * 1.5) - (7 * 4) - ((day - 10) * 2));
-          }
-          
-          burndownData.push({
-            day: `Day ${day}`,
-            dayNumber: day,
-            idealRemaining: Math.max(0, parseFloat(idealRemaining.toFixed(1))),
-            actualRemaining: Math.max(0, parseFloat(actualRemaining.toFixed(1))),
-            date: new Date(2025, 6, day + 1).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-          });
-        }
+        // Return error response instead of mock data
+        return res.status(503).json({
+          error: 'Azure DevOps service unavailable',
+          message: 'Unable to fetch sprint burndown data from Azure DevOps. Please check your configuration and try again.',
+          details: azureError.message,
+          timestamp: new Date().toISOString(),
+          retryAfter: 60
+        });
       }
 
       const response = {
@@ -871,24 +728,13 @@ router.get('/velocity-trend',
           productId
         });
         
-        // Return fallback velocity trend data
-        const sprints = ['Sprint 18', 'Sprint 19', 'Sprint 20', 'Sprint 21', 'Sprint 22', 'Sprint 23'];
-        velocityTrend = [];
-        
-        sprints.slice(-range).forEach((sprint, index) => {
-          const baseVelocity = 35;
-          const variance = (Math.random() - 0.5) * 10;
-          const velocity = Math.max(20, baseVelocity + variance + (index * 1.5));
-          const commitment = baseVelocity + (Math.random() - 0.5) * 8;
-          
-          velocityTrend.push({
-            sprint,
-            velocity: parseFloat(velocity.toFixed(1)),
-            commitment: parseFloat(commitment.toFixed(1)),
-            completed: parseFloat((velocity * 0.9).toFixed(1)),
-            average: baseVelocity,
-            sprintNumber: index + 18
-          });
+        // Return error response instead of mock data
+        return res.status(503).json({
+          error: 'Azure DevOps service unavailable',
+          message: 'Unable to fetch velocity trend data from Azure DevOps. Please check your configuration and try again.',
+          details: azureError.message,
+          timestamp: new Date().toISOString(),
+          retryAfter: 60
         });
       }
 
@@ -962,13 +808,14 @@ router.get('/task-distribution',
           productId
         });
         
-        // Return fallback task distribution data
-        taskDistribution = [
-          { name: 'Development', value: 45, count: 18, icon: '💻' },
-          { name: 'Bug Fixes', value: 25, count: 10, icon: '🐛' },
-          { name: 'Testing', value: 20, count: 8, icon: '🧪' },
-          { name: 'Documentation', value: 10, count: 4, icon: '📝' }
-        ];
+        // Return error response instead of mock data
+        return res.status(503).json({
+          error: 'Azure DevOps service unavailable',
+          message: 'Unable to fetch task distribution data from Azure DevOps. Please check your configuration and try again.',
+          details: azureError.message,
+          timestamp: new Date().toISOString(),
+          retryAfter: 60
+        });
       }
 
       const response = {
@@ -1052,6 +899,408 @@ router.get('/health', async (req, res, next) => {
       service: 'Azure DevOps Integration',
       status: 'error',
       error: error.message
+    });
+  }
+});
+
+/**
+ * @route   GET /api/metrics/bugs/classification
+ * @desc    Get classified bug analysis
+ * @access  Private
+ */
+router.get('/bugs/classification',
+  [
+    query('productId').optional().notEmpty().withMessage('Product ID cannot be empty'),
+    query('sprintId').optional().notEmpty().withMessage('Sprint ID cannot be empty'),
+    query('states').optional().isString().withMessage('States must be a string'),
+    query('assignedTo').optional().isString().withMessage('Assigned to must be a string'),
+  ],
+  async (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          error: 'Validation failed',
+          code: 'VALIDATION_ERROR',
+          details: errors.array(),
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      const { productId, sprintId, states, assignedTo } = req.query;
+      const cacheKey = `bug-classification-${productId}-${sprintId}-${states}-${assignedTo}`;
+
+      // Check cache first
+      const cachedData = metricsCache.get(cacheKey);
+      if (cachedData) {
+        logger.info('Returning cached bug classification data');
+        return res.json(cachedData);
+      }
+
+      logger.info('Fetching bug classification data', {
+        productId,
+        sprintId,
+        states,
+        assignedTo,
+        userId: req.user?.id,
+      });
+
+      // Get classified bugs
+      let classificationData;
+      try {
+        const options = {
+          states: states ? states.split(',') : null,
+          assignedTo,
+          maxResults: 1000
+        };
+
+        classificationData = await bugClassificationService.getClassifiedBugs(options);
+      } catch (error) {
+        logger.error('Error getting bug classification:', {
+          error: error.message,
+          productId,
+          sprintId
+        });
+        
+        // Return error response instead of mock data
+        return res.status(503).json({
+          error: 'Bug classification service unavailable',
+          message: 'Unable to fetch bug classification data. Please check your configuration and try again.',
+          details: error.message,
+          timestamp: new Date().toISOString(),
+          retryAfter: 60
+        });
+      }
+
+      const response = {
+        data: classificationData,
+        timestamp: new Date().toISOString(),
+      };
+
+      // Cache the response for 10 minutes
+      metricsCache.set(cacheKey, response, 600);
+      res.json(response);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @route   GET /api/metrics/bugs/stats
+ * @desc    Get bug classification statistics summary
+ * @access  Private
+ */
+router.get('/bugs/stats',
+  [
+    query('productId').optional().notEmpty().withMessage('Product ID cannot be empty'),
+    query('sprintId').optional().notEmpty().withMessage('Sprint ID cannot be empty'),
+  ],
+  async (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          error: 'Validation failed',
+          code: 'VALIDATION_ERROR',
+          details: errors.array(),
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      const { productId, sprintId } = req.query;
+      const cacheKey = `bug-stats-${productId}-${sprintId}`;
+
+      // Check cache first
+      const cachedData = metricsCache.get(cacheKey);
+      if (cachedData) {
+        logger.info('Returning cached bug statistics');
+        return res.json(cachedData);
+      }
+
+      logger.info('Fetching bug classification statistics', {
+        productId,
+        sprintId,
+        userId: req.user?.id,
+      });
+
+      // Get bug statistics
+      let bugStats;
+      try {
+        bugStats = await bugClassificationService.getBugClassificationStats({
+          maxResults: 1000
+        });
+      } catch (error) {
+        logger.error('Error getting bug statistics:', {
+          error: error.message,
+          productId,
+          sprintId
+        });
+        
+        // Return error response instead of mock data
+        return res.status(503).json({
+          error: 'Bug statistics service unavailable',
+          message: 'Unable to fetch bug statistics. Please check your configuration and try again.',
+          details: error.message,
+          timestamp: new Date().toISOString(),
+          retryAfter: 60
+        });
+      }
+
+      const response = {
+        data: bugStats,
+        timestamp: new Date().toISOString(),
+      };
+
+      // Cache the response for 10 minutes
+      metricsCache.set(cacheKey, response, 600);
+      res.json(response);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @route   GET /api/metrics/bugs/types
+ * @desc    Get bug types distribution based on Azure DevOps custom fields
+ * @access  Private
+ */
+router.get('/bugs/types',
+  [
+    query('productId').optional().notEmpty().withMessage('Product ID cannot be empty'),
+    query('sprintId').optional().notEmpty().withMessage('Sprint ID cannot be empty'),
+    query('states').optional().isString().withMessage('States must be a string'),
+  ],
+  async (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          error: 'Validation failed',
+          code: 'VALIDATION_ERROR',
+          details: errors.array(),
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      const { productId, sprintId, states } = req.query;
+      const cacheKey = `bug-types-${productId}-${sprintId}-${states}`;
+
+      // Check cache first
+      const cachedData = metricsCache.get(cacheKey);
+      if (cachedData) {
+        logger.info('Returning cached bug types data');
+        return res.json(cachedData);
+      }
+
+      logger.info('Fetching bug types distribution', {
+        productId,
+        sprintId,
+        states,
+        userId: req.user?.id,
+      });
+
+      // Get classified bugs with bug types
+      let bugTypesData;
+      try {
+        // If productId or sprintId provided, use filtered work items (same as Task Distribution)
+        let bugs = [];
+        if (productId || sprintId) {
+          // Get work items filtered by product/sprint (same approach as Task Distribution)
+          const workItems = await metricsCalculator.getWorkItemsForProduct(productId, { sprintId });
+          
+          // Filter for bug-related items using the same logic as Task Distribution
+          const BugClassificationService = require('../src/services/bugClassificationService');
+          for (const item of workItems) {
+            const isBug = await BugClassificationService.isBugWorkItem(item);
+            if (isBug) {
+              bugs.push(item);
+            }
+          }
+          
+          // Convert to classified format
+          const classifiedItems = bugs.map(bug => bugClassificationService.classifyBug(bug));
+          
+          var classifiedBugs = {
+            bugs: classifiedItems,
+            totalCount: classifiedItems.length,
+            classification: bugClassificationService.generateClassificationSummary(classifiedItems)
+          };
+        } else {
+          // Fallback to original behavior for backward compatibility
+          const options = {
+            states: states ? states.split(',') : null,
+            maxResults: 1000
+          };
+          
+          var classifiedBugs = await bugClassificationService.getClassifiedBugs(options);
+        }
+        
+        // Extract bug types distribution
+        const bugTypeDistribution = {};
+        const originalTypeDistribution = {};
+        
+        classifiedBugs.bugs.forEach(bug => {
+          const bugType = bug.classification.bugType;
+          
+          // Count by classified type
+          bugTypeDistribution[bugType.type] = (bugTypeDistribution[bugType.type] || 0) + 1;
+          
+          // Count by original Azure DevOps type if available
+          if (bugType.originalType) {
+            originalTypeDistribution[bugType.originalType] = (originalTypeDistribution[bugType.originalType] || 0) + 1;
+          }
+        });
+
+        const total = classifiedBugs.totalCount;
+        
+        // Convert to percentage format
+        const bugTypeStats = Object.entries(bugTypeDistribution).map(([type, count]) => ({
+          type,
+          count,
+          percentage: Math.round((count / total) * 100)
+        })).sort((a, b) => b.count - a.count);
+
+        const originalTypeStats = Object.entries(originalTypeDistribution).map(([originalType, count]) => ({
+          originalType,
+          count,
+          percentage: Math.round((count / total) * 100)
+        })).sort((a, b) => b.count - a.count);
+
+        bugTypesData = {
+          classifiedTypes: bugTypeStats,
+          azureDevOpsTypes: originalTypeStats,
+          distribution: classifiedBugs.classification.bugType || {},
+          totalBugs: total,
+          breakdown: {
+            withAzureDevOpsType: classifiedBugs.bugs.filter(b => b.classification.bugType.originalType).length,
+            patternMatched: classifiedBugs.bugs.filter(b => b.classification.bugType.source === 'pattern_matching').length,
+            defaultClassified: classifiedBugs.bugs.filter(b => b.classification.bugType.source === 'default').length
+          }
+        };
+
+      } catch (error) {
+        logger.error('Error getting bug types distribution:', {
+          error: error.message,
+          productId,
+          sprintId
+        });
+        
+        // Return error response instead of mock data
+        return res.status(503).json({
+          error: 'Bug types service unavailable',
+          message: 'Unable to fetch bug types distribution. Please check your configuration and try again.',
+          details: error.message,
+          timestamp: new Date().toISOString(),
+          retryAfter: 60
+        });
+      }
+
+      const response = {
+        data: bugTypesData,
+        timestamp: new Date().toISOString(),
+      };
+
+      // Cache the response for 10 minutes
+      metricsCache.set(cacheKey, response, 600);
+      res.json(response);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @route   POST /api/metrics/test-dashboard-data
+ * @desc    Test endpoint for dashboard API methods
+ * @access  Private - For testing only
+ */
+router.post('/test-dashboard-data', async (req, res) => {
+  try {
+    const { project = 'Product - Data as a Service', iterationId = 'current' } = req.body;
+    
+    logger.info(`🧪 Testing dashboard API methods for project: ${project}`);
+    
+    const results = {
+      project,
+      iterationId,
+      timestamp: new Date().toISOString(),
+      tests: {}
+    };
+
+    // Test 1: Get Sprint Capacity
+    try {
+      logger.info(`Testing getSprintCapacity...`);
+      const capacity = await azureService.getSprintCapacity(project, iterationId);
+      results.tests.sprintCapacity = {
+        success: true,
+        data: capacity,
+        hasData: capacity.teamCapacities && capacity.teamCapacities.length > 0
+      };
+    } catch (error) {
+      results.tests.sprintCapacity = {
+        success: false,
+        error: error.message
+      };
+    }
+
+    // Test 2: Get Official Sprint Burndown
+    try {
+      logger.info(`Testing getSprintBurndown...`);
+      const burndown = await azureService.getSprintBurndown(project, iterationId);
+      results.tests.sprintBurndown = {
+        success: true,
+        data: burndown,
+        hasData: burndown.dataExists
+      };
+    } catch (error) {
+      results.tests.sprintBurndown = {
+        success: false,
+        error: error.message
+      };
+    }
+
+    // Test 3: Get Work Item Analytics
+    try {
+      logger.info(`Testing getWorkItemAnalytics...`);
+      const analytics = await azureService.getWorkItemAnalytics(project, {
+        iterationId: iterationId !== 'current' ? iterationId : undefined,
+        maxResults: 50
+      });
+      results.tests.workItemAnalytics = {
+        success: true,
+        data: analytics,
+        hasData: analytics.workItems && analytics.workItems.length > 0,
+        source: analytics.source
+      };
+    } catch (error) {
+      results.tests.workItemAnalytics = {
+        success: false,
+        error: error.message
+      };
+    }
+
+    // Summary
+    const successfulTests = Object.values(results.tests).filter(test => test.success).length;
+    const totalTests = Object.keys(results.tests).length;
+    
+    results.summary = {
+      successful: successfulTests,
+      total: totalTests,
+      successRate: `${Math.round((successfulTests / totalTests) * 100)}%`
+    };
+
+    logger.info(`✅ Dashboard API tests completed: ${successfulTests}/${totalTests} successful`);
+    
+    res.json(results);
+    
+  } catch (error) {
+    logger.error('Dashboard API test failed:', error);
+    res.status(500).json({
+      error: 'Dashboard API test failed',
+      message: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 });

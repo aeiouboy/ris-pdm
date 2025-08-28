@@ -3,6 +3,10 @@ const { query, param, validationResult } = require('express-validator');
 const router = express.Router();
 const logger = require('../utils/logger');
 const { requireRoles } = require('../middleware/auth');
+const AzureDevOpsService = require('../src/services/azureDevOpsService');
+
+// Initialize Azure DevOps service
+const azureDevOpsService = new AzureDevOpsService();
 
 /**
  * @route   GET /api/users/profile
@@ -87,91 +91,141 @@ router.get('/:userId/performance',
         requestedBy: req.user.id,
       });
 
-      // Mock individual performance data
-      const performance = {
-        userId,
-        period: {
-          type: period,
-          startDate,
-          endDate,
-        },
-        user: {
-          id: userId,
-          name: userId === req.user.id ? req.user.name : 'Team Member',
-          email: userId === req.user.id ? req.user.email : 'team.member@company.com',
-          role: 'Senior Developer',
-          team: 'Core Platform Team',
-          manager: 'John Doe',
-        },
-        metrics: {
-          productivity: {
-            workItemsCompleted: 23,
-            storyPointsDelivered: 45,
-            averageCycleTime: 3.2,
-            commitmentReliability: 87.5,
-          },
-          quality: {
-            codeReviewScore: 8.7,
-            bugReports: 2,
-            testCoverage: 92.3,
-            codeComplexity: 'low',
-          },
-          collaboration: {
-            peerRating: 8.9,
-            mentorshipHours: 12,
-            knowledgeSharing: 15,
-            meetingParticipation: 85,
-          },
-          skills: {
-            technical: 8.5,
-            domain: 7.8,
-            leadership: 6.9,
-            communication: 8.2,
-          },
-        },
-        goals: [
-          {
-            id: 'goal-1',
-            title: 'Improve code review turnaround time',
-            progress: 75,
-            target: 'Complete within 24 hours',
-            status: 'on-track',
-          },
-          {
-            id: 'goal-2',
-            title: 'Complete Azure certification',
-            progress: 45,
-            target: 'Pass exam by end of quarter',
-            status: 'at-risk',
-          },
-        ],
-        feedback: [
-          {
-            date: '2024-01-15',
-            type: 'peer',
-            rating: 9,
-            comment: 'Excellent technical leadership in sprint planning',
-            author: 'Anonymous',
-          },
-          {
-            date: '2024-01-10',
-            type: 'manager',
-            rating: 8,
-            comment: 'Strong performance on complex features',
-            author: 'John Doe',
-          },
-        ],
-        trends: {
-          productivity: 'increasing',
-          quality: 'stable',
-          collaboration: 'increasing',
-        },
-      };
+      try {
+        // Get user data from Azure DevOps team members
+        const allTeamMembers = await azureDevOpsService.getTeamMembers();
+        const user = allTeamMembers.find(member => 
+          member.id === userId || member.email === userId
+        );
 
-      res.json({
-        data: performance,
-        timestamp: new Date().toISOString(),
-      });
+        if (!user && userId !== req.user.id) {
+          return res.status(404).json({
+            error: 'User not found',
+            code: 'USER_NOT_FOUND',
+            userId,
+            timestamp: new Date().toISOString(),
+          });
+        }
+
+        // Build query for user's work items
+        const workItemsQuery = {
+          assignedTo: user ? user.email : req.user.email,
+        };
+
+        // Add date filters if provided
+        if (startDate && endDate) {
+          workItemsQuery.customQuery = `
+            SELECT [System.Id], [System.Title], [System.WorkItemType], 
+                   [System.AssignedTo], [System.State], [Microsoft.VSTS.Scheduling.StoryPoints],
+                   [System.CreatedDate], [System.ChangedDate], [Microsoft.VSTS.Common.ClosedDate]
+            FROM WorkItems 
+            WHERE [System.AssignedTo] = '${user ? user.email : req.user.email}'
+            AND [System.ChangedDate] >= '${startDate}'
+            AND [System.ChangedDate] <= '${endDate}'
+            AND [System.State] <> 'Removed'
+            ORDER BY [System.ChangedDate] DESC
+          `;
+        }
+
+        // Get user's work items
+        const workItemsResult = await azureDevOpsService.getWorkItems(workItemsQuery);
+        const workItemIds = workItemsResult.workItems.map(wi => wi.id);
+        
+        let workItemDetails = { workItems: [] };
+        if (workItemIds.length > 0) {
+          workItemDetails = await azureDevOpsService.getWorkItemDetails(workItemIds);
+        }
+
+        // Calculate performance metrics from real work items
+        const workItems = workItemDetails.workItems || [];
+        const totalItems = workItems.length;
+        const completedItems = workItems.filter(wi => 
+          wi.state && (wi.state.toLowerCase().includes('done') || 
+                      wi.state.toLowerCase().includes('closed') || 
+                      wi.state.toLowerCase().includes('resolved'))
+        ).length;
+
+        const storyPointsDelivered = workItems
+          .filter(wi => wi.state && 
+            (wi.state.toLowerCase().includes('done') || 
+             wi.state.toLowerCase().includes('closed') || 
+             wi.state.toLowerCase().includes('resolved')))
+          .reduce((sum, wi) => sum + (wi.storyPoints || 0), 0);
+
+        // Calculate average cycle time
+        const completedWithDates = workItems.filter(wi => 
+          wi.closedDate && wi.createdDate
+        );
+        const avgCycleTime = completedWithDates.length > 0 
+          ? completedWithDates.reduce((sum, wi) => {
+              const created = new Date(wi.createdDate);
+              const closed = new Date(wi.closedDate);
+              return sum + ((closed - created) / (1000 * 60 * 60 * 24)); // days
+            }, 0) / completedWithDates.length
+          : 0;
+
+        // Calculate commitment reliability (completed vs total assigned)
+        const commitmentReliability = totalItems > 0 ? (completedItems / totalItems) * 100 : 0;
+
+        const performance = {
+          userId,
+          period: {
+            type: period,
+            startDate,
+            endDate,
+          },
+          user: {
+            id: userId,
+            name: user ? user.name : req.user.name,
+            email: user ? user.email : req.user.email,
+            role: user ? user.role : 'Developer',
+            team: 'Azure DevOps Team',
+            manager: 'Team Lead', // Would need additional API call to get manager
+          },
+          metrics: {
+            productivity: {
+              workItemsCompleted: completedItems,
+              storyPointsDelivered: storyPointsDelivered,
+              averageCycleTime: Math.round(avgCycleTime * 10) / 10,
+              commitmentReliability: Math.round(commitmentReliability * 10) / 10,
+            },
+            quality: {
+              bugReports: workItems.filter(wi => 
+                wi.type && wi.type.toLowerCase().includes('bug')
+              ).length,
+              testCoverage: null, // Would need integration with code quality tools
+              codeComplexity: 'unknown', // Would need integration with code analysis tools
+            },
+            collaboration: {
+              workItemsCreated: workItems.filter(wi => 
+                wi.createdBy === (user ? user.email : req.user.email)
+              ).length,
+              totalAssignments: totalItems,
+            },
+          },
+          trends: {
+            productivity: 'stable', // Would need historical data
+            quality: 'stable',
+            collaboration: 'stable',
+          },
+          source: 'Azure DevOps'
+        };
+
+        res.json({
+          data: performance,
+          timestamp: new Date().toISOString(),
+        });
+
+      } catch (azureError) {
+        logger.error(`Error fetching performance data for user ${userId}:`, azureError);
+        
+        return res.status(500).json({
+          error: 'Failed to fetch performance data',
+          code: 'AZURE_DEVOPS_ERROR',
+          message: azureError.message,
+          timestamp: new Date().toISOString(),
+        });
+      }
     } catch (error) {
       next(error);
     }
@@ -211,75 +265,78 @@ router.get('/',
         requestedBy: req.user.id,
       });
 
-      // Mock users data
-      const mockUsers = [
-        {
-          id: 'user-1',
-          name: 'Alice Johnson',
-          email: 'alice.johnson@company.com',
-          role: 'Senior Developer',
-          team: 'Core Platform Team',
-          status: 'active',
-          manager: 'John Doe',
-          joinDate: '2023-03-15',
-          skills: ['React', 'Node.js', 'Azure'],
-          currentSprint: 'Sprint 24.3',
-        },
-        {
-          id: 'user-2',
-          name: 'Bob Wilson',
-          email: 'bob.wilson@company.com',
-          role: 'Frontend Developer',
-          team: 'Core Platform Team',
-          status: 'active',
-          manager: 'John Doe',
-          joinDate: '2023-07-20',
-          skills: ['React', 'TypeScript', 'CSS'],
-          currentSprint: 'Sprint 24.3',
-        },
-        {
-          id: 'user-3',
-          name: 'Carol Davis',
-          email: 'carol.davis@company.com',
-          role: 'QA Engineer',
-          team: 'Claims Processing Team',
-          status: 'active',
-          manager: 'Jane Smith',
-          joinDate: '2023-01-10',
-          skills: ['Testing', 'Automation', 'Selenium'],
-          currentSprint: 'Sprint 24.3',
-        },
-      ];
+      try {
+        // Get all team members from Azure DevOps
+        const allTeamMembers = await azureDevOpsService.getTeamMembers();
+        
+        if (!allTeamMembers || allTeamMembers.length === 0) {
+          return res.status(503).json({
+            error: 'Azure DevOps service unavailable',
+            code: 'AZURE_DEVOPS_UNAVAILABLE',
+            message: 'Failed to fetch team members from Azure DevOps',
+            timestamp: new Date().toISOString(),
+          });
+        }
 
-      // Apply filters
-      let filteredUsers = mockUsers.filter(user => user.status === status);
+        // Transform Azure DevOps team members to user format
+        let users = allTeamMembers.map(member => ({
+          id: member.id,
+          name: member.name,
+          email: member.email,
+          role: member.role || 'Developer',
+          team: 'Azure DevOps Team', // Could be enhanced with actual team data
+          status: member.isActive ? 'active' : 'inactive',
+          manager: 'Team Lead', // Would need additional API call to get manager
+          joinDate: null, // Would need additional API call or HR integration
+          skills: [], // Would need additional API call or profile data
+          currentSprint: 'Current Sprint', // Could be enhanced with iteration data
+          avatar: member.avatar,
+          azureDevOpsUser: true,
+        }));
 
-      if (team) {
-        filteredUsers = filteredUsers.filter(user => 
-          user.team.toLowerCase().includes(team.toLowerCase())
-        );
+        // Apply status filter
+        users = users.filter(user => user.status === status);
+
+        // Apply team filter
+        if (team) {
+          users = users.filter(user => 
+            user.team.toLowerCase().includes(team.toLowerCase())
+          );
+        }
+
+        // Apply role filter
+        if (role) {
+          users = users.filter(user => 
+            user.role.toLowerCase().includes(role.toLowerCase())
+          );
+        }
+
+        // Apply pagination
+        const total = users.length;
+        const paginatedUsers = users.slice(offset, offset + parseInt(limit));
+
+        res.json({
+          data: paginatedUsers,
+          pagination: {
+            total,
+            limit: parseInt(limit),
+            offset: parseInt(offset),
+            hasMore: offset + paginatedUsers.length < total,
+          },
+          source: 'Azure DevOps',
+          timestamp: new Date().toISOString(),
+        });
+
+      } catch (azureError) {
+        logger.error('Error fetching team members from Azure DevOps:', azureError);
+        
+        return res.status(500).json({
+          error: 'Failed to fetch users',
+          code: 'AZURE_DEVOPS_ERROR',
+          message: azureError.message,
+          timestamp: new Date().toISOString(),
+        });
       }
-
-      if (role) {
-        filteredUsers = filteredUsers.filter(user => 
-          user.role.toLowerCase().includes(role.toLowerCase())
-        );
-      }
-
-      // Apply pagination
-      const total = filteredUsers.length;
-      const users = filteredUsers.slice(offset, offset + parseInt(limit));
-
-      res.json({
-        data: users,
-        pagination: {
-          total,
-          limit: parseInt(limit),
-          offset: parseInt(offset),
-          hasMore: offset + users.length < total,
-        },
-        timestamp: new Date().toISOString(),
-      });
     } catch (error) {
       next(error);
     }
@@ -324,37 +381,94 @@ router.get('/:userId',
         requestedBy: req.user.id,
       });
 
-      // Mock user data
-      const user = {
-        id: userId,
-        name: userId === req.user.id ? req.user.name : 'Team Member',
-        email: userId === req.user.id ? req.user.email : 'team.member@company.com',
-        role: 'Senior Developer',
-        team: 'Core Platform Team',
-        status: 'active',
-        manager: 'John Doe',
-        joinDate: '2023-03-15',
-        skills: ['React', 'Node.js', 'Azure', 'JavaScript', 'TypeScript'],
-        certifications: ['Azure Developer Associate', 'Scrum Master'],
-        currentProjects: ['RIS Core Platform', 'Claims Processing Module'],
-        recentActivity: [
-          {
-            date: '2024-01-20',
-            action: 'Completed feature: User Authentication',
-            type: 'development',
-          },
-          {
-            date: '2024-01-19',
-            action: 'Code review: Payment Processing',
-            type: 'review',
-          },
-        ],
-      };
+      try {
+        // Get all team members from Azure DevOps
+        const allTeamMembers = await azureDevOpsService.getTeamMembers();
+        const azureUser = allTeamMembers.find(member => 
+          member.id === userId || member.email === userId
+        );
 
-      res.json({
-        data: user,
-        timestamp: new Date().toISOString(),
-      });
+        if (!azureUser && userId !== req.user.id) {
+          return res.status(404).json({
+            error: 'User not found',
+            code: 'USER_NOT_FOUND',
+            userId,
+            timestamp: new Date().toISOString(),
+          });
+        }
+
+        // Use Azure DevOps data or current user data
+        const user = azureUser ? {
+          id: azureUser.id,
+          name: azureUser.name,
+          email: azureUser.email,
+          role: azureUser.role || 'Developer',
+          team: 'Azure DevOps Team',
+          status: azureUser.isActive ? 'active' : 'inactive',
+          manager: 'Team Lead', // Would need additional API call
+          joinDate: null, // Would need additional API call or HR integration
+          skills: [], // Would need additional API call or profile data
+          certifications: [], // Would need additional API call
+          currentProjects: [], // Could be enhanced with project assignment data
+          avatar: azureUser.avatar,
+          azureDevOpsUser: true,
+          recentActivity: [], // Could be enhanced with work item activity
+        } : {
+          id: req.user.id,
+          name: req.user.name,
+          email: req.user.email,
+          role: req.user.role || 'Developer',
+          team: 'Azure DevOps Team',
+          status: 'active',
+          manager: 'Team Lead',
+          joinDate: null,
+          skills: [],
+          certifications: [],
+          currentProjects: [],
+          recentActivity: [],
+        };
+
+        // Enhance with recent work item activity if possible
+        try {
+          const workItemsQuery = {
+            assignedTo: user.email,
+            maxResults: 10
+          };
+          const recentWorkItems = await azureDevOpsService.getWorkItems(workItemsQuery);
+          
+          if (recentWorkItems && recentWorkItems.workItems.length > 0) {
+            const workItemIds = recentWorkItems.workItems.slice(0, 5).map(wi => wi.id);
+            const workItemDetails = await azureDevOpsService.getWorkItemDetails(workItemIds);
+            
+            user.recentActivity = workItemDetails.workItems.map(wi => ({
+              date: wi.changedDate,
+              action: `Work item: ${wi.title}`,
+              type: wi.type?.toLowerCase() || 'development',
+              workItemId: wi.id,
+              state: wi.state
+            }));
+          }
+        } catch (activityError) {
+          logger.warn(`Failed to get recent activity for user ${userId}:`, activityError.message);
+          // Continue without recent activity
+        }
+
+        res.json({
+          data: user,
+          source: 'Azure DevOps',
+          timestamp: new Date().toISOString(),
+        });
+
+      } catch (azureError) {
+        logger.error(`Error fetching user ${userId} from Azure DevOps:`, azureError);
+        
+        return res.status(500).json({
+          error: 'Failed to fetch user',
+          code: 'AZURE_DEVOPS_ERROR',
+          message: azureError.message,
+          timestamp: new Date().toISOString(),
+        });
+      }
     } catch (error) {
       next(error);
     }

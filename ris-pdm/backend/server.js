@@ -28,6 +28,7 @@ const exportRoutes = require('./routes/exports');
 // Import services
 const AzureDevOpsService = require('./src/services/azureDevOpsService');
 const RealtimeService = require('./src/services/realtimeService');
+const ProjectResolutionService = require('./src/services/projectResolutionService');
 
 const app = express();
 const server = createServer(app);
@@ -48,6 +49,7 @@ const PORT = process.env.PORT || 3001;
 
 // Initialize services with enhanced performance features
 const azureDevOpsService = new AzureDevOpsService();
+const projectResolutionService = new ProjectResolutionService(azureDevOpsService);
 const RequestBatchingService = require('./src/services/requestBatchingService');
 const cacheService = require('./src/services/cacheService');
 const PerformanceMonitorService = require('./src/services/performanceMonitorService');
@@ -68,6 +70,9 @@ const initializeServices = async () => {
     
     // Initialize Azure DevOps service with caching
     await azureDevOpsService.initialize();
+    
+    // Initialize project resolution service
+    logger.info('🔧 Initializing project resolution service');
     
     // Initialize request batching service
     requestBatchingService = new RequestBatchingService(azureDevOpsService);
@@ -102,16 +107,66 @@ const initializeServices = async () => {
 
 const realtimeService = new RealtimeService(azureDevOpsService, io);
 
+// Global error handlers
+process.on('uncaughtException', (error) => {
+  logger.error('🚨 Uncaught Exception:', {
+    error: error.message,
+    stack: error.stack,
+    pid: process.pid,
+    timestamp: new Date().toISOString()
+  });
+  
+  // Allow some time for logging, then exit
+  setTimeout(() => {
+    process.exit(1);
+  }, 1000);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('🚨 Unhandled Promise Rejection:', {
+    reason: reason?.message || reason,
+    stack: reason?.stack,
+    promise: promise.toString(),
+    pid: process.pid,
+    timestamp: new Date().toISOString()
+  });
+  
+  // Allow some time for logging, then exit
+  setTimeout(() => {
+    process.exit(1);
+  }, 1000);
+});
+
+// Graceful shutdown handlers
+process.on('SIGTERM', () => {
+  logger.info('🛑 SIGTERM received, shutting down gracefully');
+  gracefulShutdown();
+});
+
+process.on('SIGINT', () => {
+  logger.info('🛑 SIGINT received, shutting down gracefully');
+  gracefulShutdown();
+});
+
+// gracefulShutdown function defined later in the file
+
 // Rate limiting
+// More generous rate limiting for dashboard application
 const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100, // limit each IP to 100 requests per windowMs
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 1 * 60 * 1000, // 1 minute windows
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 300, // 300 requests per minute (5 requests per second)
   message: {
     error: 'Too many requests from this IP, please try again later.',
-    code: 'RATE_LIMIT_EXCEEDED'
+    code: 'RATE_LIMIT_EXCEEDED',
+    retryAfter: '60 seconds'
   },
   standardHeaders: true,
   legacyHeaders: false,
+  // Skip rate limiting for certain conditions
+  skip: (req, res) => {
+    // Skip for health checks and static assets
+    return req.path.includes('/health') || req.path.includes('/favicon');
+  }
 });
 
 // Security middleware

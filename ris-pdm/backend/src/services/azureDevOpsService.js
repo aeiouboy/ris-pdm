@@ -8,6 +8,7 @@ require('dotenv').config();
 const https = require('https');
 const { performance } = require('perf_hooks');
 const { mapFrontendProjectToAzure } = require('../config/projectMapping');
+const logger = require('../../utils/logger');
 // Using built-in fetch from Node.js 18+
 const fetch = globalThis.fetch;
 const cacheService = require('./cacheService');
@@ -20,12 +21,10 @@ class AzureDevOpsService {
     this.apiVersion = config.apiVersion || '7.0';
     this.baseUrl = `https://dev.azure.com/${this.organization}`;
     
-    // Check if we're in test/fallback mode
-    this.isTestMode = this.isUsingTestCredentials();
-    
-    // Rate limiting configuration
+    // Rate limiting configuration - Azure DevOps allows much more than 60/minute
+    // Typical limits are around 200-300/minute for REST APIs
     this.rateLimiter = {
-      requestsPerMinute: 60,
+      requestsPerMinute: parseInt(process.env.AZURE_DEVOPS_RATE_LIMIT) || 180, // More generous limit
       requestQueue: [],
       requestTimes: []
     };
@@ -53,29 +52,18 @@ class AzureDevOpsService {
   }
 
   /**
-   * Check if using test/fallback credentials
-   */
-  isUsingTestCredentials() {
-    const testValues = ['test-org', 'test-project', 'test-pat', 'mock', 'demo', 'sample'];
-    return testValues.includes(this.organization) || 
-           testValues.includes(this.project) || 
-           testValues.includes(this.pat) ||
-           !this.organization || !this.project || !this.pat;
-  }
-
-  /**
    * Validate required configuration
    */
   validateConfig() {
     if (!this.organization || !this.project || !this.pat) {
-      console.warn('Azure DevOps configuration incomplete - running in test mode with mock data');
-      this.isTestMode = true;
-      return;
+      const error = new Error(
+        'Azure DevOps configuration incomplete. Required: AZURE_DEVOPS_ORG, AZURE_DEVOPS_PROJECT, AZURE_DEVOPS_PAT'
+      );
+      logger.error('Azure DevOps configuration validation failed:', error.message);
+      throw error;
     }
     
-    if (this.isTestMode) {
-      console.log('Azure DevOps detected test credentials - using mock data instead of real API calls');
-    }
+    logger.info('Azure DevOps configuration validated successfully');
   }
 
   /**
@@ -118,7 +106,7 @@ class AzureDevOpsService {
       const response = await fetch(url, requestOptions);
       
       const duration = performance.now() - startTime;
-      console.log(`Azure DevOps API call: ${options.method || 'GET'} ${endpoint} - ${response.status} (${duration.toFixed(2)}ms)`);
+      logger.debug(`Azure DevOps API call: ${options.method || 'GET'} ${endpoint} - ${response.status} (${duration.toFixed(2)}ms)`);
       
       if (!response.ok) {
         const errorText = await response.text();
@@ -130,7 +118,7 @@ class AzureDevOpsService {
       
       return data;
     } catch (error) {
-      console.error(`Azure DevOps API request failed: ${endpoint}`, error);
+      logger.error(`Azure DevOps API request failed: ${endpoint}`, error);
       throw new Error(`Failed to fetch from Azure DevOps: ${error.message}`);
     }
   }
@@ -150,7 +138,7 @@ class AzureDevOpsService {
       const waitTime = 60000 - (now - oldestRequest);
       
       if (waitTime > 0) {
-        console.log(`Rate limiting: waiting ${waitTime}ms`);
+        logger.debug(`Rate limiting: waiting ${waitTime}ms`);
         await new Promise(resolve => setTimeout(resolve, waitTime));
       }
     }
@@ -205,16 +193,10 @@ class AzureDevOpsService {
       projectName = null // New parameter for project-specific queries
     } = queryOptions;
 
-    // Return mock data if in test mode
-    if (this.isTestMode) {
-      console.log('Returning mock work items (test mode)');
-      return this.generateMockWorkItems(queryOptions);
-    }
-
     // Check enhanced cache
     const cached = await this.getFromCache('workItems', 'query', queryOptions);
     if (cached) {
-      console.log('Returning cached work items');
+      logger.debug('Returning cached work items');
       return cached;
     }
 
@@ -253,7 +235,7 @@ class AzureDevOpsService {
 
       // Use specific project if provided, otherwise use default
       const targetProject = projectName || this.project;
-      const endpoint = `/${targetProject}/_apis/wit/wiql?api-version=${this.apiVersion}`;
+      const endpoint = `/${encodeURIComponent(targetProject)}/_apis/wit/wiql?api-version=${this.apiVersion}`;
       const response = await this.makeRequest(endpoint, {
         method: 'POST',
         body: { query: wiqlQuery }
@@ -274,7 +256,7 @@ class AzureDevOpsService {
       return result;
       
     } catch (error) {
-      console.error('Error fetching work items:', error);
+      logger.error('Error fetching work items:', error);
       throw new Error(`Failed to fetch work items: ${error.message}`);
     }
   }
@@ -291,12 +273,6 @@ class AzureDevOpsService {
       throw new Error('Work item IDs must be a non-empty array');
     }
 
-    // Return mock data if in test mode
-    if (this.isTestMode) {
-      console.log('Returning mock work item details (test mode)');
-      return this.generateMockWorkItemDetails(workItemIds);
-    }
-
     // Check enhanced cache
     const cacheParams = { 
       ids: workItemIds.sort().join(','), 
@@ -304,7 +280,7 @@ class AzureDevOpsService {
     };
     const cached = await this.getFromCache('workItemDetails', 'batch', cacheParams);
     if (cached) {
-      console.log('Returning cached work item details');
+      logger.debug('Returning cached work item details');
       return cached;
     }
 
@@ -329,7 +305,9 @@ class AzureDevOpsService {
         'Microsoft.VSTS.Scheduling.OriginalEstimate',
         'System.Reason',
         'System.Parent',
-        'System.Description'
+        'System.Description',
+        // Add custom fields that exist in this Azure DevOps instance
+        'Bug types' // Direct field name as shown in user's screenshot
       ];
 
       const fieldsToRequest = fields || defaultFields;
@@ -340,9 +318,9 @@ class AzureDevOpsService {
 
       for (const batch of batches) {
         const ids = batch.join(',');
-        const fieldsParam = fieldsToRequest.join(',');
         const targetProject = projectName || this.project;
-        const endpoint = `/${targetProject}/_apis/wit/workitems?ids=${ids}&fields=${fieldsParam}&api-version=${this.apiVersion}`;
+        // Use $expand=all to get all fields including custom fields, don't specify individual fields
+        const endpoint = `/${encodeURIComponent(targetProject)}/_apis/wit/workitems?ids=${ids}&$expand=all&api-version=${this.apiVersion}`;
         
         const batchResult = await this.makeRequest(endpoint);
         allResults.push(...batchResult.value);
@@ -368,7 +346,7 @@ class AzureDevOpsService {
       return result;
       
     } catch (error) {
-      console.error('Error fetching work item details:', error);
+      logger.error('Error fetching work item details:', error);
       throw new Error(`Failed to fetch work item details: ${error.message}`);
     }
   }
@@ -380,63 +358,81 @@ class AzureDevOpsService {
    * @returns {Promise<object>} Iterations data
    */
   async getIterations(teamName = null, timeframe = 'current') {
-    const team = teamName || this.project;
+    // Try different team name formats for Azure DevOps
+    const possibleTeamNames = teamName ? [teamName] : [
+      this.project,
+      `${this.project} Team`,
+      this.project.split(' - ').pop(), // Last part after dash
+      this.project.replace('Product - ', '') // Remove Product prefix
+    ];
     
-    // Check enhanced cache
-    const cached = await this.getFromCache('iterations', team, { timeframe });
-    if (cached) {
-      console.log('Returning cached iterations');
-      return cached;
-    }
-
-    try {
-      let endpoint;
-      if (timeframe === 'current') {
-        endpoint = `/${this.project}/${team}/_apis/work/teamsettings/iterations?$timeframe=current&api-version=${this.apiVersion}`;
-      } else if (timeframe === 'all') {
-        endpoint = `/${this.project}/${team}/_apis/work/teamsettings/iterations?api-version=${this.apiVersion}`;
-      } else {
-        endpoint = `/${this.project}/${team}/_apis/work/teamsettings/iterations?$timeframe=${timeframe}&api-version=${this.apiVersion}`;
+    for (const team of possibleTeamNames) {
+      // Check enhanced cache
+      const cached = await this.getFromCache('iterations', team, { timeframe });
+      if (cached) {
+        logger.debug('Returning cached iterations');
+        return cached;
       }
 
-      const response = await this.makeRequest(endpoint);
-      
-      // Enrich iterations with additional data
-      const enrichedIterations = await Promise.all(
-        response.value.map(async (iteration) => {
-          try {
-            // Get iteration work items
-            const iterationWorkItems = await this.getWorkItems({
-              iterationPath: iteration.path
-            });
-            
-            return {
-              ...iteration,
-              workItemCount: iterationWorkItems.totalCount,
-              workItems: iterationWorkItems.workItems.slice(0, 10) // Limit for performance
-            };
-          } catch (error) {
-            console.warn(`Failed to enrich iteration ${iteration.name}:`, error.message);
-            return iteration;
-          }
-        })
-      );
+      try {
+        let endpoint;
+        if (timeframe === 'current') {
+          endpoint = `/${encodeURIComponent(this.project)}/${encodeURIComponent(team)}/_apis/work/teamsettings/iterations?$timeframe=current&api-version=${this.apiVersion}`;
+        } else if (timeframe === 'all') {
+          endpoint = `/${encodeURIComponent(this.project)}/${encodeURIComponent(team)}/_apis/work/teamsettings/iterations?api-version=${this.apiVersion}`;
+        } else {
+          endpoint = `/${encodeURIComponent(this.project)}/${encodeURIComponent(team)}/_apis/work/teamsettings/iterations?$timeframe=${timeframe}&api-version=${this.apiVersion}`;
+        }
 
-      const result = {
-        iterations: enrichedIterations,
-        count: enrichedIterations.length,
-        team,
-        timeframe
-      };
-
-      // Cache the result
-      await this.setCache('iterations', team, { timeframe }, result, this.cacheTTL.iterations);
-      return result;
+        const response = await this.makeRequest(endpoint);
       
-    } catch (error) {
-      console.error('Error fetching iterations:', error);
-      throw new Error(`Failed to fetch iterations: ${error.message}`);
+        // Enrich iterations with additional data
+        const enrichedIterations = await Promise.all(
+          response.value.map(async (iteration) => {
+            try {
+              // Get iteration work items
+              const iterationWorkItems = await this.getWorkItems({
+                iterationPath: iteration.path
+              });
+              
+              return {
+                ...iteration,
+                workItemCount: iterationWorkItems.totalCount,
+                workItems: iterationWorkItems.workItems.slice(0, 10) // Limit for performance
+              };
+            } catch (error) {
+              logger.warn(`Failed to enrich iteration ${iteration.name}:`, error.message);
+              return iteration;
+            }
+          })
+        );
+
+        const result = {
+          iterations: enrichedIterations,
+          count: enrichedIterations.length,
+          team,
+          timeframe
+        };
+
+        // Cache the result
+        await this.setCache('iterations', team, { timeframe }, result, this.cacheTTL.iterations);
+        return result;
+        
+      } catch (error) {
+        // Try next team name
+        logger.warn(`Team '${team}' not found, trying next option:`, error.message);
+        continue;
+      }
     }
+    
+    // If no team worked, return empty result
+    return {
+      iterations: [],
+      count: 0,
+      team: possibleTeamNames[0],
+      timeframe,
+      error: 'No valid team found for this project'
+    };
   }
 
   /**
@@ -453,12 +449,12 @@ class AzureDevOpsService {
     // Check enhanced cache
     const cached = await this.getFromCache('teamCapacity', teamName, { iterationId });
     if (cached) {
-      console.log('Returning cached team capacity');
+      logger.debug('Returning cached team capacity');
       return cached;
     }
 
     try {
-      const endpoint = `/${this.project}/${teamName}/_apis/work/teamsettings/iterations/${iterationId}/capacities?api-version=${this.apiVersion}`;
+      const endpoint = `/${encodeURIComponent(this.project)}/${encodeURIComponent(teamName)}/_apis/work/teamsettings/iterations/${encodeURIComponent(iterationId)}/capacities?api-version=${this.apiVersion}`;
       const response = await this.makeRequest(endpoint);
       
       // Calculate total capacity and utilization
@@ -483,7 +479,7 @@ class AzureDevOpsService {
       return result;
       
     } catch (error) {
-      console.error('Error fetching team capacity:', error);
+      logger.error('Error fetching team capacity:', error);
       throw new Error(`Failed to fetch team capacity: ${error.message}`);
     }
   }
@@ -513,6 +509,58 @@ class AzureDevOpsService {
     const fields = azureWorkItem.fields || {};
     const project = projectName || this.project;
     
+    // Extract custom fields for bug classification
+    const customFields = {};
+    
+    // Look for Bug Types field with possible names that exist in this instance
+    const possibleBugTypeFields = [
+      'bug types', // Direct field name - lowercase as specified by user
+      'Bug types', // Direct field name - title case
+      'Bug Types', // Direct field name - title case
+      'Custom.BugType',
+      'Custom.BugTypes', 
+      'Custom.bug types',
+      'Microsoft.VSTS.Common.BugType',
+      'System.BugType',
+      'WEF.BugType',
+      'WEF.Bug_Type',
+      'Custom.Bug_Type'
+    ];
+    
+    // Case-insensitive search for bug types field
+    let bugTypeFieldFound = null;
+    for (const fieldName of possibleBugTypeFields) {
+      if (fields[fieldName]) {
+        customFields.bugTypes = fields[fieldName];
+        bugTypeFieldFound = fieldName;
+        break;
+      }
+    }
+    
+    // If not found with exact match, try case-insensitive search
+    if (!bugTypeFieldFound) {
+      const fieldKeys = Object.keys(fields);
+      for (const actualFieldName of fieldKeys) {
+        if (actualFieldName.toLowerCase() === 'bug types' || 
+            actualFieldName.toLowerCase().includes('bug') && actualFieldName.toLowerCase().includes('type')) {
+          customFields.bugTypes = fields[actualFieldName];
+          bugTypeFieldFound = actualFieldName;
+          break;
+        }
+      }
+    }
+
+    // Extract other custom fields that might be useful
+    Object.keys(fields).forEach(fieldKey => {
+      if (fieldKey.startsWith('Custom.') || 
+          fieldKey.startsWith('WEF_') || 
+          fieldKey.includes('Bug') || 
+          fieldKey.includes('Issue') || 
+          fieldKey.includes('Type')) {
+        customFields[fieldKey] = fields[fieldKey];
+      }
+    });
+    
     return {
       id: fields['System.Id'],
       title: fields['System.Title'],
@@ -536,7 +584,14 @@ class AzureDevOpsService {
       parentId: fields['System.Parent'],
       description: fields['System.Description'],
       project: project, // Add project context
-      url: azureWorkItem._links?.html?.href || `https://dev.azure.com/${this.organization}/${encodeURIComponent(project)}/_workitems/edit/${fields['System.Id']}`
+      url: azureWorkItem._links?.html?.href || `https://dev.azure.com/${this.organization}/${encodeURIComponent(project)}/_workitems/edit/${fields['System.Id']}`,
+      
+      // Add custom fields for bug classification
+      customFields: customFields,
+      bugType: customFields.bugTypes, // Direct access for bug classification
+      
+      // Raw fields for advanced classification
+      fields: fields
     };
   }
 
@@ -582,7 +637,7 @@ class AzureDevOpsService {
   async clearCache() {
     // Clear Redis cache with pattern matching
     await this.cacheService.clearPattern('ris:cache:*');
-    console.log('Azure DevOps service cache cleared');
+    logger.info('Azure DevOps service cache cleared');
   }
 
   /**
@@ -591,11 +646,61 @@ class AzureDevOpsService {
   async initialize() {
     try {
       await this.cacheService.initialize();
-      console.log('Azure DevOps service initialized with enhanced caching');
+      logger.info('Azure DevOps service initialized with enhanced caching');
       return true;
     } catch (error) {
-      console.warn('Azure DevOps service initialized without Redis cache:', error.message);
+      logger.warn('Azure DevOps service initialized without Redis cache:', error.message);
       return false;
+    }
+  }
+
+  /**
+   * Get all projects from the Azure DevOps organization
+   * @returns {Promise<object>} Projects data
+   */
+  async getProjects() {
+    // Check enhanced cache
+    const cached = await this.getFromCache('projects', 'all', {});
+    if (cached) {
+      logger.debug('Returning cached projects');
+      return cached;
+    }
+
+    try {
+      const endpoint = `/_apis/projects?api-version=${this.apiVersion}`;
+      const response = await this.makeRequest(endpoint);
+      
+      // Transform projects to our standardized format
+      const transformedProjects = response.value.map(project => ({
+        id: project.id,
+        name: project.name,
+        description: project.description || '',
+        state: project.state,
+        visibility: project.visibility,
+        lastUpdateTime: project.lastUpdateTime,
+        url: project.url,
+        capabilities: project.capabilities || {},
+        // Map to product format expected by frontend
+        teamSize: null, // Will be populated when we fetch team members
+        currentSprint: null, // Will be populated when we fetch iterations
+        status: project.state === 'wellFormed' ? 'active' : 'inactive',
+        lead: null, // Will be populated when we fetch team members
+        createdAt: project.lastUpdateTime
+      }));
+
+      const result = {
+        projects: transformedProjects,
+        count: transformedProjects.length,
+        organization: this.organization
+      };
+
+      // Cache the result with 1-hour TTL as specified in requirements
+      await this.setCache('projects', 'all', {}, result, 3600);
+      return result;
+      
+    } catch (error) {
+      logger.error('Error fetching projects:', error);
+      throw new Error(`Failed to fetch projects: ${error.message}`);
     }
   }
 
@@ -607,31 +712,25 @@ class AzureDevOpsService {
   async getProjectTeamMembers(projectName = null) {
     const targetProject = projectName || this.project;
     
-    // Return mock data if in test mode
-    if (this.isTestMode) {
-      console.log(`Returning mock team members for project: ${targetProject}`);
-      return this.generateMockTeamMembers(targetProject);
-    }
-
-    console.log(`🔧 DEBUG: Getting team members for Azure DevOps project: "${targetProject}"`);
+    logger.debug(`Getting team members for Azure DevOps project: "${targetProject}"`);
 
     try {
       // Get all teams in the specific project - using correct API format
       const teamsEndpoint = `/_apis/projects/${encodeURIComponent(targetProject)}/teams?api-version=${this.apiVersion}`;
-      console.log(`🔧 Getting teams from: ${teamsEndpoint}`);
+      logger.debug(`Getting teams from: ${teamsEndpoint}`);
       const teamsResponse = await this.makeRequest(teamsEndpoint);
-      console.log(`🔧 Teams API response:`, teamsResponse);
-      console.log(`🔧 Found ${teamsResponse.value?.length || 0} teams in project ${targetProject}`);
+      logger.debug('Teams API response:', teamsResponse);
+      logger.debug(`Found ${teamsResponse.value?.length || 0} teams in project ${targetProject}`);
       
       const allMembers = new Map();
       
       // Get members from each team in the project
       for (const team of teamsResponse.value || []) {
-        console.log(`🔧 Getting members for team: ${team.name} (${team.id})`);
+        logger.debug(`Getting members for team: ${team.name} (${team.id})`);
         const membersEndpoint = `/_apis/projects/${encodeURIComponent(targetProject)}/teams/${team.id}/members?api-version=${this.apiVersion}`;
         const membersResponse = await this.makeRequest(membersEndpoint);
-        console.log(`🔧 Members API response for team ${team.name}:`, membersResponse);
-        console.log(`🔧 Found ${membersResponse.value?.length || 0} members in team ${team.name}`);
+        logger.debug(`Members API response for team ${team.name}:`, membersResponse);
+        logger.debug(`Found ${membersResponse.value?.length || 0} members in team ${team.name}`);
         
         for (const member of membersResponse.value || []) {
           if (!allMembers.has(member.identity.uniqueName)) {
@@ -654,7 +753,7 @@ class AzureDevOpsService {
         a.name.localeCompare(b.name)
       );
       
-      console.log(`📊 Found ${members.length} total team members for project: ${targetProject}`);
+      logger.info(`Found ${members.length} total team members for project: ${targetProject}`);
       
       return {
         members,
@@ -665,7 +764,7 @@ class AzureDevOpsService {
       };
       
     } catch (error) {
-      console.error(`Error fetching team members for project ${targetProject}:`, error);
+      logger.error(`Error fetching team members for project ${targetProject}:`, error);
       throw new Error(`Failed to fetch team members for project ${targetProject}: ${error.message}`);
     }
   }
@@ -696,27 +795,27 @@ class AzureDevOpsService {
       const azureProjectName = mapFrontendProjectToAzure(projectName);
       
       if (!azureProjectName) {
-        console.warn(`⚠️ No Azure DevOps mapping for project: ${projectName}`);
+        logger.warn(`No Azure DevOps mapping for project: ${projectName}`);
         return [];
       }
       
-      console.log(`📋 Getting team members for Azure DevOps project: "${azureProjectName}"`);
+      logger.debug(`Getting team members for Azure DevOps project: "${azureProjectName}"`);
       
       // Get actual project team members from the specific Azure DevOps project
       const projectTeamData = await this.getProjectTeamMembers(azureProjectName);
       
       if (!projectTeamData || !projectTeamData.members) {
-        console.warn(`⚠️ No team members found in Azure DevOps project: ${azureProjectName}`);
+        logger.warn(`No team members found in Azure DevOps project: ${azureProjectName}`);
         return [];
       }
       
-      console.log(`📋 Found ${projectTeamData.members.length} team members in project "${azureProjectName}"`);
-      console.log(`📋 Members: ${projectTeamData.members.map(m => m.name).join(', ')}`);
+      logger.info(`Found ${projectTeamData.members.length} team members in project "${azureProjectName}"`);
+      logger.debug(`Members: ${projectTeamData.members.map(m => m.name).join(', ')}`);
       
       return projectTeamData.members;
       
     } catch (error) {
-      console.warn(`⚠️ Could not get project members for "${projectName}":`, error.message);
+      logger.warn(`Could not get project members for "${projectName}":`, error.message);
       
       // Fallback: Filter by work item assignments for this specific project
       try {
@@ -734,155 +833,238 @@ class AzureDevOpsService {
           assignedEmails.has(member.email?.toLowerCase())
         );
         
-        console.log(`📋 Project "${projectName}": ${filteredMembers.length} members (from work items fallback)`);
+        logger.info(`Project "${projectName}": ${filteredMembers.length} members (from work items fallback)`);
         return filteredMembers;
         
       } catch (fallbackError) {
-        console.error(`❌ Both project members and work items failed for "${projectName}":`, fallbackError.message);
+        logger.error(`Both project members and work items failed for "${projectName}":`, fallbackError.message);
         return []; // Return empty array instead of arbitrary hash-based assignment
       }
     }
   }
 
   /**
-   * Generate mock team members for test mode
-   * @private
+   * Get Sprint Capacity data (like in Azure DevOps dashboard)
+   * @param {string} projectName Project name
+   * @param {string} iterationId Iteration/Sprint ID
+   * @returns {Promise<object>} Sprint capacity data
    */
-  generateMockTeamMembers(projectName) {
-    // Generate different mock teams for different projects
-    const projectTeams = {
-      'Team - Product Management': [
-        { name: 'Alice Johnson', email: 'alice.johnson@company.com' },
-        { name: 'Bob Smith', email: 'bob.smith@company.com' },
-        { name: 'Carol Davis', email: 'carol.davis@company.com' }
-      ],
-      'Product - CFG Workflow': [
-        { name: 'David Wilson', email: 'david.wilson@company.com' },
-        { name: 'Emma Brown', email: 'emma.brown@company.com' }
-      ],
-      'Product - Luke': [
-        { name: 'Frank Miller', email: 'frank.miller@company.com' },
-        { name: 'Grace Lee', email: 'grace.lee@company.com' },
-        { name: 'Henry Taylor', email: 'henry.taylor@company.com' },
-        { name: 'Iris Chen', email: 'iris.chen@company.com' }
-      ]
-    };
-    
-    const teamMembers = projectTeams[projectName] || [
-      { name: 'Default User', email: 'default@company.com' }
-    ];
-    
-    const members = teamMembers.map((member, index) => ({
-      id: member.email,
-      name: member.name,
-      email: member.email,
-      avatar: null,
-      role: 'Developer',
-      isActive: true
-    }));
-    
-    return {
-      members,
-      count: members.length,
-      project: projectName
-    };
-  }
+  async getSprintCapacity(projectName, iterationId) {
+    const cacheKey = `sprint_capacity_${projectName}_${iterationId}`;
+    const cached = await this.getFromCache('sprint_capacity', projectName, { iterationId });
+    if (cached) return cached;
 
-  /**
-   * Generate mock work items for test mode
-   * @private
-   */
-  generateMockWorkItems(queryOptions = {}) {
-    const { maxResults = 1000 } = queryOptions;
-    const mockTeamMembers = [
-      { name: 'Sarah Johnson', email: 'sarah.johnson@company.com' },
-      { name: 'Mike Chen', email: 'mike.chen@company.com' },
-      { name: 'Alex Rivera', email: 'alex.rivera@company.com' },
-      { name: 'Emily Davis', email: 'emily.davis@company.com' },
-      { name: 'David Kim', email: 'david.kim@company.com' }
-    ];
-
-    const workItemTypes = ['User Story', 'Task', 'Bug', 'Feature'];
-    const states = ['New', 'Active', 'In Progress', 'Resolved', 'Closed'];
-    const workItems = [];
-
-    // Generate realistic work items
-    for (let i = 1; i <= Math.min(maxResults, 50); i++) {
-      const member = mockTeamMembers[i % mockTeamMembers.length];
-      const type = workItemTypes[i % workItemTypes.length];
-      const state = states[Math.floor(Math.random() * states.length)];
+    try {
+      // First, get teams for the project to find actual team names
+      const teamsUrl = `https://dev.azure.com/${this.organization}/_apis/projects/${encodeURIComponent(projectName)}/teams?api-version=7.0`;
+      logger.info(`Getting teams for project ${projectName}`);
+      const teamsResponse = await this.makeRequest(teamsUrl);
       
-      workItems.push({
-        id: 1000 + i,
-        url: `https://dev.azure.com/test-org/test-project/_apis/wit/workItems/${1000 + i}`,
-        type: type
-      });
-    }
-
-    return {
-      workItems,
-      query: 'Mock WIQL Query',
-      totalCount: workItems.length,
-      returnedCount: workItems.length
-    };
-  }
-
-  /**
-   * Generate mock work item details for test mode
-   * @private
-   */
-  generateMockWorkItemDetails(workItemIds) {
-    const mockTeamMembers = [
-      { name: 'Sarah Johnson', email: 'sarah.johnson@company.com' },
-      { name: 'Mike Chen', email: 'mike.chen@company.com' },
-      { name: 'Alex Rivera', email: 'alex.rivera@company.com' },
-      { name: 'Emily Davis', email: 'emily.davis@company.com' },
-      { name: 'David Kim', email: 'david.kim@company.com' }
-    ];
-
-    const workItemTypes = ['User Story', 'Task', 'Bug', 'Feature'];
-    const states = ['New', 'Active', 'In Progress', 'Resolved', 'Closed'];
-    const priorities = [1, 2, 3, 4];
-    
-    const workItems = workItemIds.map(id => {
-      const memberIndex = id % mockTeamMembers.length;
-      const member = mockTeamMembers[memberIndex];
-      const type = workItemTypes[id % workItemTypes.length];
-      const state = states[id % states.length];
-      const priority = priorities[id % priorities.length];
-      const storyPoints = type === 'User Story' ? Math.ceil(Math.random() * 8) + 1 : null;
+      if (!teamsResponse.value || teamsResponse.value.length === 0) {
+        throw new Error(`No teams found for project ${projectName}`);
+      }
       
-      return {
-        id,
-        title: `${type} ${id}: Mock work item for testing`,
-        workItemType: type,
-        state,
-        assignee: member.name,
-        assigneeEmail: member.email,
-        assigneeImageUrl: null,
-        storyPoints,
-        priority,
-        createdDate: new Date(2025, 0, Math.floor(Math.random() * 20) + 1).toISOString(),
-        changedDate: new Date(2025, 0, Math.floor(Math.random() * 20) + 10).toISOString(),
-        closedDate: state === 'Closed' ? new Date(2025, 0, Math.floor(Math.random() * 20) + 15).toISOString() : null,
-        areaPath: 'RIS Performance Dashboard',
-        iterationPath: 'RIS Performance Dashboard\\Sprint 23',
-        tags: type === 'Bug' ? 'bug;high-priority' : 'feature;development',
-        originalEstimate: Math.ceil(Math.random() * 16),
-        remainingWork: state === 'Closed' ? 0 : Math.ceil(Math.random() * 8),
-        completedWork: Math.ceil(Math.random() * 8),
-        description: `This is a mock ${type.toLowerCase()} work item created for testing purposes. It simulates real Azure DevOps data.`,
-        reason: state === 'Active' ? 'New' : 'Development',
-        parent: null
+      // Try to get capacity from the first available team
+      const team = teamsResponse.value[0];
+      logger.info(`Using team: ${team.name} for capacity data`);
+      
+      // Get team iterations first to validate the iteration exists
+      const iterationsUrl = `${this.baseUrl}/${encodeURIComponent(projectName)}/${encodeURIComponent(team.id)}/_apis/work/teamsettings/iterations?api-version=7.0`;
+      const iterationsResponse = await this.makeRequest(iterationsUrl);
+      
+      // Get capacity using correct team ID and iteration structure
+      const capacityUrl = `${this.baseUrl}/${encodeURIComponent(projectName)}/${encodeURIComponent(team.id)}/_apis/work/teamsettings/iterations/${iterationId}/capacities?api-version=7.0`;
+      
+      logger.info(`Fetching sprint capacity from: ${capacityUrl}`);
+      const response = await this.makeRequest(capacityUrl);
+      
+      const capacityData = {
+        iterationId,
+        teamCapacities: response.value || [],
+        totalCapacity: 0,
+        totalActivity: 0,
+        utilizationPercentage: 0
       };
-    });
 
-    return {
-      workItems,
-      count: workItems.length,
-      fields: ['all']
-    };
+      // Calculate totals
+      if (capacityData.teamCapacities.length > 0) {
+        capacityData.totalCapacity = capacityData.teamCapacities.reduce((sum, member) => {
+          const activities = member.activities || [];
+          return sum + activities.reduce((actSum, activity) => actSum + (activity.capacityPerDay || 0), 0);
+        }, 0);
+      }
+
+      await this.setCache('sprint_capacity', projectName, { iterationId }, capacityData, this.cacheTTL.teamCapacity);
+      return capacityData;
+      
+    } catch (error) {
+      logger.warn(`Could not get sprint capacity for ${projectName}:`, error.message);
+      return {
+        iterationId,
+        teamCapacities: [],
+        totalCapacity: 0,
+        totalActivity: 0,
+        utilizationPercentage: 0,
+        error: error.message
+      };
+    }
   }
+
+  /**
+   * Get Sprint Burndown data from Azure DevOps (official burndown)
+   * @param {string} projectName Project name  
+   * @param {string} iterationId Iteration/Sprint ID
+   * @returns {Promise<object>} Burndown chart data
+   */
+  async getSprintBurndown(projectName, iterationId) {
+    const cacheKey = `sprint_burndown_${projectName}_${iterationId}`;
+    const cached = await this.getFromCache('sprint_burndown', projectName, { iterationId });
+    if (cached) return cached;
+
+    try {
+      // First, get teams for the project
+      const teamsUrl = `https://dev.azure.com/${this.organization}/_apis/projects/${encodeURIComponent(projectName)}/teams?api-version=7.0`;
+      logger.info(`Getting teams for project ${projectName}`);
+      const teamsResponse = await this.makeRequest(teamsUrl);
+      
+      if (!teamsResponse.value || teamsResponse.value.length === 0) {
+        throw new Error(`No teams found for project ${projectName}`);
+      }
+      
+      const team = teamsResponse.value[0];
+      logger.info(`Using team: ${team.name} for burndown data`);
+      
+      // Get team iterations to find valid iteration data
+      const iterationsUrl = `${this.baseUrl}/${encodeURIComponent(projectName)}/${encodeURIComponent(team.id)}/_apis/work/teamsettings/iterations?api-version=7.0`;
+      const iterationsResponse = await this.makeRequest(iterationsUrl);
+      
+      let targetIteration = null;
+      if (iterationId === 'current') {
+        // Find current iteration
+        targetIteration = iterationsResponse.value?.find(iter => 
+          iter.attributes?.timeFrame === 'current' ||
+          (new Date(iter.attributes?.startDate) <= new Date() && new Date() <= new Date(iter.attributes?.finishDate))
+        );
+      } else {
+        // Find specific iteration
+        targetIteration = iterationsResponse.value?.find(iter => 
+          iter.id === iterationId || iter.name === iterationId
+        );
+      }
+      
+      if (!targetIteration) {
+        throw new Error(`Iteration ${iterationId} not found for team ${team.name}`);
+      }
+      
+      // Get capacity data for this iteration  
+      const capacityUrl = `${this.baseUrl}/${encodeURIComponent(projectName)}/${encodeURIComponent(team.id)}/_apis/work/teamsettings/iterations/${targetIteration.id}/capacities?api-version=7.0`;
+      const capacityResponse = await this.makeRequest(capacityUrl);
+      
+      // Calculate total team capacity
+      const totalCapacity = capacityResponse.value?.reduce((sum, member) => {
+        const activities = member.activities || [];
+        return sum + activities.reduce((actSum, activity) => actSum + (activity.capacityPerDay || 0), 0);
+      }, 0) || 0;
+      
+      const burndownData = {
+        iterationId: targetIteration.id,
+        iterationName: targetIteration.name,
+        startDate: targetIteration.attributes?.startDate,
+        endDate: targetIteration.attributes?.finishDate,
+        totalCapacity: totalCapacity,
+        teamCapacities: capacityResponse.value || [],
+        chartData: {
+          totalCapacity: totalCapacity,
+          teamName: team.name,
+          iteration: targetIteration.name
+        },
+        dataExists: true
+      };
+
+      await this.setCache('sprint_burndown', projectName, { iterationId }, burndownData, this.cacheTTL.iterations);
+      return burndownData;
+      
+    } catch (error) {
+      logger.warn(`Could not get official sprint burndown for ${projectName}:`, error.message);
+      return {
+        iterationId,
+        chartData: {},
+        dataExists: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Get Work Item Analytics (dashboard-style metrics)
+   * @param {string} projectName Project name
+   * @param {object} options Query options
+   * @returns {Promise<object>} Work item analytics
+   */
+  async getWorkItemAnalytics(projectName, options = {}) {
+    const cacheKey = `work_item_analytics_${projectName}_${JSON.stringify(options)}`;
+    const cached = await this.getFromCache('analytics', projectName, options);
+    if (cached) return cached;
+
+    try {
+      // Use Analytics API if available (newer Azure DevOps feature)
+      const analyticsUrl = `https://analytics.dev.azure.com/${this.organization}/${encodeURIComponent(projectName)}/_odata/v3.0-preview/WorkItems`;
+      
+      const filters = [];
+      if (options.iterationId) {
+        filters.push(`IterationSK eq ${options.iterationId}`);
+      }
+      if (options.startDate && options.endDate) {
+        filters.push(`CreatedDate ge ${options.startDate} and CreatedDate le ${options.endDate}`);
+      }
+      
+      const filterQuery = filters.length > 0 ? `$filter=${filters.join(' and ')}` : '';
+      const selectQuery = `$select=WorkItemId,Title,WorkItemType,State,AssignedTo,StoryPoints,CreatedDate,ChangedDate`;
+      const fullUrl = `${analyticsUrl}?${selectQuery}&${filterQuery}&$top=1000`;
+      
+      logger.info(`Fetching work item analytics for ${projectName}`);
+      const response = await this.makeRequest(fullUrl);
+      
+      const analytics = {
+        workItems: response.value || [],
+        totalCount: response['@odata.count'] || (response.value ? response.value.length : 0),
+        queryOptions: options,
+        source: 'analytics_api'
+      };
+
+      await this.setCache('analytics', projectName, options, analytics, this.cacheTTL.workItems);
+      return analytics;
+      
+    } catch (error) {
+      logger.warn(`Analytics API failed for ${projectName}, using fallback:`, error.message);
+      
+      // Fallback to regular work items query
+      try {
+        const workItemsResponse = await this.getWorkItems({
+          projectName,
+          maxResults: 1000,
+          ...options
+        });
+        
+        return {
+          workItems: workItemsResponse.workItems || [],
+          totalCount: workItemsResponse.totalCount || 0,
+          queryOptions: options,
+          source: 'fallback_api'
+        };
+      } catch (fallbackError) {
+        logger.error(`Both analytics and fallback failed for ${projectName}:`, fallbackError.message);
+        return {
+          workItems: [],
+          totalCount: 0,
+          queryOptions: options,
+          source: 'error',
+          error: fallbackError.message
+        };
+      }
+    }
+  }
+
 }
 
 module.exports = AzureDevOpsService;
