@@ -26,7 +26,12 @@ const Dashboard = () => {
   useEffect(() => {
     const fetchSprintData = async () => {
       try {
-        const response = await axios.get('/api/metrics/sprints');
+        const response = await axios.get('/api/metrics/sprints', {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('authToken') || 'mock-token'}`,
+            'Content-Type': 'application/json'
+          }
+        });
         if (response.data && response.data.success && response.data.data) {
           setSprintData(response.data.data);
         }
@@ -122,6 +127,7 @@ const Dashboard = () => {
         const response = await axios.get('/api/metrics/overview', {
           timeout: 10000, // 10 second timeout
           headers: {
+            'Authorization': `Bearer ${localStorage.getItem('authToken') || 'mock-token'}`,
             'Content-Type': 'application/json'
           }
         });
@@ -172,7 +178,12 @@ const Dashboard = () => {
           ...(selectedSprint !== 'all-sprints' && { sprintId: selectedSprint })
         });
         
-        const response = await axios.get(`/api/metrics/kpis?${params}`);
+        const response = await axios.get(`/api/metrics/kpis?${params}`, {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('authToken') || 'mock-token'}`,
+            'Content-Type': 'application/json'
+          }
+        });
         setKpiData(response.data.data);
       } catch (error) {
         console.error('❌ Error fetching KPI data:', error);
@@ -196,7 +207,12 @@ const Dashboard = () => {
           ...(selectedSprint !== 'all-sprints' && { sprintId: selectedSprint })
         });
         
-        const response = await axios.get(`/api/metrics/burndown?${params}`);
+        const response = await axios.get(`/api/metrics/burndown?${params}`, {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('authToken') || 'mock-token'}`,
+            'Content-Type': 'application/json'
+          }
+        });
         setBurndownData(response.data.data);
       } catch (error) {
         console.error('❌ Error fetching burndown data:', error);
@@ -221,7 +237,12 @@ const Dashboard = () => {
           ...(selectedProduct !== 'all-projects' && { productId: selectedProduct })
         });
         
-        const response = await axios.get(`/api/metrics/velocity-trend?${params}`);
+        const response = await axios.get(`/api/metrics/velocity-trend?${params}`, {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('authToken') || 'mock-token'}`,
+            'Content-Type': 'application/json'
+          }
+        });
         setVelocityTrendData(response.data.data);
       } catch (error) {
         console.error('❌ Error fetching velocity trend data:', error);

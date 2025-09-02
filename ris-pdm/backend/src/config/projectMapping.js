@@ -21,14 +21,15 @@ const PROJECT_CONFIG = {
 };
 
 // Azure DevOps Project → Team mapping - CRITICAL: Team names must match Azure DevOps exactly
+// Based on actual teams from Azure DevOps screenshot
 const TEAM_MAPPING = {
-  // ✅ ENABLED PROJECTS - PMP and DaaS teams
-  'Product - Data as a Service': 'Product - Data as a Service', // Default team
-  'Product - Partner Management Platform': 'PMP Developer Team', // 🎯 FIXED: Correct team name
-  'Team - Product Management': 'PMP Developer Team', // All teams map to PMP Developer Team
-  'Team - Engineering': 'PMP Developer Team',
-  'Team - QA Testing': 'PMP Developer Team',
-  'Team - DevOps': 'PMP Developer Team',
+  // ✅ ENABLED PROJECTS - Using EXACT team names from Azure DevOps
+  'Product - Data as a Service': 'Product - Data as a Service Team', // Will be created if needed
+  'Product - Partner Management Platform': 'PMP Developer Team', // 🎯 CONFIRMED: Exact team name from screenshot
+  'Team - Product Management': 'PMP Developer Team', // Map to PMP Developer Team
+  'Team - Engineering': 'PMP Developer Team', // Map to PMP Developer Team  
+  'Team - QA Testing': 'PMP QA Team', // 🎯 CONFIRMED: Exact team name from screenshot
+  'Team - DevOps': 'PMP Developer Team', // Map to PMP Developer Team
   
   // ❌ DISABLED PROJECTS - Commented out to hide from dashboard
   // 'Product - Supplier Connect': 'Product - Supplier Connect', 

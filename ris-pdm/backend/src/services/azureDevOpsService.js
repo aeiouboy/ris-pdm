@@ -464,16 +464,15 @@ class AzureDevOpsService {
    * @returns {Promise<object>} Iterations data
    */
   async getIterations(teamName = null, timeframe = 'current') {
-    // 🎯 FIXED: Use proper team mapping instead of guessing patterns
-    const correctTeamName = teamName || mapFrontendProjectToTeam(this.project) || this.project;
+    // 🎯 FIXED: Use only the passed team name, no fallback to project name
+    if (!teamName) {
+      throw new Error('Team name is required for getIterations');
+    }
+    const correctTeamName = teamName;
     
-    // Try correct team name first, then fallback patterns
+    // Use only the correct team name - no conflicting fallback patterns
     const possibleTeamNames = [
-      correctTeamName,
-      this.project,
-      `${this.project} Team`,
-      this.project.split(' - ').pop(), // Last part after dash
-      this.project.replace('Product - ', '') // Remove Product prefix
+      correctTeamName
     ];
     
     for (const team of possibleTeamNames) {
@@ -485,6 +484,8 @@ class AzureDevOpsService {
       }
 
       try {
+        logger.info(`🔍 Azure DevOps API: project="${this.project}", team="${team}"`);
+        
         let endpoint;
         if (timeframe === 'current') {
           endpoint = `/${encodeURIComponent(this.project)}/${encodeURIComponent(team)}/_apis/work/teamsettings/iterations?$timeframe=current&api-version=${this.apiVersion}`;
@@ -493,6 +494,8 @@ class AzureDevOpsService {
         } else {
           endpoint = `/${encodeURIComponent(this.project)}/${encodeURIComponent(team)}/_apis/work/teamsettings/iterations?$timeframe=${timeframe}&api-version=${this.apiVersion}`;
         }
+        
+        logger.info(`🔍 Azure DevOps endpoint: ${endpoint}`);
 
         const response = await this.makeRequest(endpoint);
       
@@ -897,6 +900,23 @@ class AzureDevOpsService {
     } catch (error) {
       logger.error('Error fetching projects:', error);
       throw new Error(`Failed to fetch projects: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get teams from a specific Azure DevOps project
+   * @param {string} projectName - The Azure DevOps project name
+   * @returns {Promise<Array>} Array of teams
+   */
+  async getTeams(projectName) {
+    try {
+      // Use the correct teams endpoint with proper API version
+      const endpoint = `/_apis/projects/${encodeURIComponent(projectName)}/teams?api-version=7.0`;
+      const response = await this.makeRequest(endpoint);
+      return response.value || [];
+    } catch (error) {
+      logger.error(`Error fetching teams for project ${projectName}:`, error);
+      return [];
     }
   }
 

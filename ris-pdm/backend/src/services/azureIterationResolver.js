@@ -102,18 +102,19 @@ class AzureIterationResolver {
       // 🎯 FIXED: Use proper team mapping instead of guessing patterns
       const correctTeamName = teamName || mapFrontendProjectToTeam(project) || project;
       
-      // Try correct team name first, then fallback patterns
+      // Debug logging to see what teams we're trying
+      logger.info(`🔍 Project: "${project}" → Mapped Team: "${mapFrontendProjectToTeam(project)}" → Final Team: "${correctTeamName}"`);
+      
+      // 🎯 FIXED: Use the correctly mapped team name FIRST, avoiding wrong project names
       const teamPatterns = [
-        correctTeamName,
-        teamName,
-        `${teamName} Team`,
-        project,
-        `${project} Team`
+        correctTeamName,     // This is the CORRECT mapped team name from projectMapping.js
+        // Only add additional patterns if the mapped team is different from project name
+        ...(correctTeamName !== project ? [] : [`${project} Team`])
       ].filter(Boolean); // Remove null/undefined values
 
       for (const team of teamPatterns) {
         try {
-          const iterations = await this.azureService.getIterations(project, team);
+          const iterations = await this.azureService.getIterations(team, 'current');
           if (iterations && iterations.length > 0) {
             logger.debug(`Found ${iterations.length} iterations for team: ${team}`);
             return iterations;
@@ -124,14 +125,9 @@ class AzureIterationResolver {
         }
       }
 
-      // If no team-specific iterations found, try project-level
-      try {
-        const iterations = await this.azureService.getIterations(project);
-        return iterations || [];
-      } catch (error) {
-        logger.warn(`Could not get iterations for project: ${project}`);
-        return [];
-      }
+      // If no team-specific iterations found, don't try project-level with wrong team name
+      logger.warn(`Could not find valid team iterations for project: ${project}. No fallback to project-level.`);
+      return [];
 
     } catch (error) {
       logger.error(`Error getting project iterations: ${error.message}`);

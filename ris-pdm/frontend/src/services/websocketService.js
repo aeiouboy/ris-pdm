@@ -19,7 +19,7 @@ class WebSocketService {
     
     // Configuration
     this.config = {
-      serverUrl: 'http://localhost:3002',
+      serverUrl: 'http://localhost:6000',
       autoConnect: true,
       reconnection: true,
       reconnectionDelay: 1000,
