@@ -53,19 +53,26 @@ router.get('/',
         });
       }
 
-      let products = projectsData.projects.map(project => ({
-        id: project.id,
-        name: project.name,
-        description: project.description || '',
-        teamSize: project.teamSize,
-        currentSprint: project.currentSprint,
-        status: project.status,
-        lead: project.lead,
-        createdAt: project.createdAt || project.lastUpdateTime,
-        azureDevOpsProject: true, // Flag to indicate this comes from Azure DevOps
-        visibility: project.visibility,
-        url: project.url,
-      }));
+      let products = projectsData.projects
+        .filter(project => {
+          // Filter projects based on enabled configuration
+          // Check if the project name is enabled in our configuration
+          return isProjectEnabled(project.name);
+        })
+        .map(project => ({
+          id: project.id,
+          name: project.name,
+          description: project.description || '',
+          teamSize: project.teamSize,
+          currentSprint: project.currentSprint,
+          status: project.status,
+          lead: project.lead,
+          createdAt: project.createdAt || project.lastUpdateTime,
+          azureDevOpsProject: true, // Flag to indicate this comes from Azure DevOps
+          visibility: project.visibility,
+          url: project.url,
+          config: getProjectConfig(project.name) // Add project configuration for frontend
+        }));
 
       // Apply status filter
       if (status) {
@@ -179,6 +186,17 @@ router.get('/:productId',
         });
       }
 
+      // Check if the project is enabled in our configuration
+      if (!isProjectEnabled(project.name)) {
+        return res.status(403).json({
+          error: 'Product access denied',
+          code: 'PRODUCT_DISABLED',
+          message: `Access to project '${project.name}' is currently disabled`,
+          productId,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
       // Transform to product format
       let product = {
         id: project.id,
@@ -192,6 +210,7 @@ router.get('/:productId',
         azureDevOpsProject: true,
         visibility: project.visibility,
         url: project.url,
+        config: getProjectConfig(project.name) // Add project configuration for frontend
       };
 
       try {
@@ -282,6 +301,17 @@ router.get('/:productId/metrics',
         return res.status(404).json({
           error: 'Product not found',
           code: 'PRODUCT_NOT_FOUND',
+          productId,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      // Check if the project is enabled in our configuration
+      if (!isProjectEnabled(project.name)) {
+        return res.status(403).json({
+          error: 'Product metrics access denied',
+          code: 'PRODUCT_DISABLED',
+          message: `Metrics access to project '${project.name}' is currently disabled`,
           productId,
           timestamp: new Date().toISOString(),
         });
@@ -404,6 +434,46 @@ router.get('/:productId/metrics',
       return res.status(500).json({
         error: 'Failed to fetch product metrics',
         code: 'AZURE_DEVOPS_ERROR',
+        message: error.message,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+);
+
+/**
+ * @route   GET /api/products/config
+ * @desc    Get project configuration and filtering status
+ * @access  Private
+ */
+router.get('/config',
+  async (req, res, next) => {
+    try {
+      const { getProjectStats, getEnabledProjects } = require('../src/config/projectMapping');
+      
+      logger.info(`Fetching project configuration for user ${req.user.email}`, {
+        userId: req.user.id,
+      });
+
+      const stats = getProjectStats();
+      const enabledProjects = getEnabledProjects();
+
+      res.json({
+        data: {
+          stats,
+          enabledProjects,
+          configuration: 'PMP and DaaS projects only',
+          lastUpdated: new Date().toISOString()
+        },
+        message: 'Currently showing only Partner Management Platform (PMP) and Data as a Service (DaaS) projects',
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      logger.error('Error fetching project configuration:', error);
+      
+      return res.status(500).json({
+        error: 'Failed to fetch project configuration',
+        code: 'CONFIG_ERROR',
         message: error.message,
         timestamp: new Date().toISOString(),
       });

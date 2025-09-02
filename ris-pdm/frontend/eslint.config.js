@@ -26,4 +26,51 @@ export default defineConfig([
       'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
     },
   },
+  {
+    files: ['cypress/**/*.{js,jsx}', 'cypress.config.js'],
+    languageOptions: {
+      globals: {
+        ...globals.browser,
+        ...globals.node,
+        cy: 'readonly',
+        Cypress: 'readonly',
+        describe: 'readonly',
+        it: 'readonly',
+        beforeEach: 'readonly',
+        afterEach: 'readonly',
+        before: 'readonly',
+        after: 'readonly',
+        require: 'readonly',
+        expect: 'readonly'
+      },
+    },
+  },
+  {
+    files: ['src/test/**/*.{js,jsx}', 'src/**/*.test.{js,jsx}', '**/*.test.{js,jsx}', 'vitest.config.js'],
+    languageOptions: {
+      globals: {
+        ...globals.browser,
+        ...globals.node,
+        describe: 'readonly',
+        it: 'readonly',
+        beforeEach: 'readonly',
+        afterEach: 'readonly',
+        expect: 'readonly',
+        vi: 'readonly',
+        test: 'readonly',
+        global: 'readonly',
+        __dirname: 'readonly',
+        require: 'readonly',
+        process: 'readonly'
+      },
+    },
+  },
+  {
+    files: ['**/*.{js,jsx}'],
+    languageOptions: {
+      globals: {
+        process: 'readonly'
+      },
+    },
+  },
 ])

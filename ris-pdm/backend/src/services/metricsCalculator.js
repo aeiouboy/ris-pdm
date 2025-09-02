@@ -8,8 +8,7 @@ const {
   calculateVelocity, 
   calculateTeamPerformance, 
   calculateQualityMetrics,
-  calculateSprintMetrics,
-  transformForCharts 
+  calculateSprintMetrics
 } = require('../utils/dataTransformers');
 
 class MetricsCalculatorService {
@@ -1478,7 +1477,7 @@ class MetricsCalculatorService {
    */
   async calculateTaskDistribution(options = {}) {
     const { period = 'sprint', sprintId, productId } = options;
-    const cacheKey = `task_distribution_${period}_${sprintId}_${productId}`;
+    const cacheKey = `task_distribution_v2_${period}_${sprintId}_${productId}`;
     
     const cached = this.getFromCache(cacheKey);
     if (cached) {
@@ -1614,69 +1613,37 @@ class MetricsCalculatorService {
   }
 
   normalizeWorkItemType(type) {
-    const typeMapping = {
-      // Core Development
-      'Task': 'Development Tasks',
-      'User Story': 'User Stories',
-      'Feature': 'Features',
-      'Epic': 'Epics',
-      
-      // Quality & Testing
-      'Bug': 'Bug Fixes',
-      'Test Case': 'Testing',
-      'Code Review': 'Code Review',
-      
-      // Infrastructure & DevOps
-      'Infrastructure': 'Infrastructure',
-      'Deployment': 'Deployment',
-      'Configuration': 'DevOps',
-      
-      // Documentation & Planning
-      'Documentation': 'Documentation',
-      'Research': 'Research',
-      'Spike': 'Technical Spikes',
-      'Investigation': 'Investigation',
-      
-      // Design & UX
-      'Design': 'Design',
-      'UI': 'UI/UX Work',
-      'UX': 'UI/UX Work'
-    };
-    
-    return typeMapping[type] || type;
+    // Simplified categorization to match user requirements: tasks, bugs, design, others
+    switch (type) {
+      case 'Task':
+      case 'User Story':
+      case 'Feature':
+      case 'Epic':
+      case 'Product Backlog Item':
+      case 'Development Task':
+        return 'tasks';
+      case 'Bug':
+      case 'Issue':
+      case 'Defect':
+        return 'bugs';
+      case 'Design':
+      case 'Design Task':
+      case 'Documentation':
+      case 'Document':
+      case 'UI':
+      case 'UX':
+        return 'design';
+      default:
+        return 'others';
+    }
   }
 
   getTypeIcon(type) {
     const icons = {
-      // Core Development
-      'Development Tasks': '💻',
-      'User Stories': '📖',
-      'Features': '⭐',
-      'Epics': '🏔️',
-      
-      // Quality & Testing
-      'Bug Fixes': '🐛',
-      'Testing': '🧪',
-      'Code Review': '👁️',
-      
-      // Infrastructure & DevOps
-      'Infrastructure': '🏗️',
-      'Deployment': '🚀',
-      'DevOps': '⚙️',
-      
-      // Documentation & Planning
-      'Documentation': '📝',
-      'Research': '🔍',
-      'Technical Spikes': '⚡',
-      'Investigation': '🕵️',
-      
-      // Design & UX
-      'Design': '🎨',
-      'UI/UX Work': '🖼️',
-      
-      // Legacy mappings
-      'Development': '💻',
-      'Testing': '🧪'
+      'tasks': '💻',
+      'bugs': '🐛', 
+      'design': '🎨',
+      'others': '📋'
     };
     
     return icons[type] || '📋';
@@ -1684,31 +1651,10 @@ class MetricsCalculatorService {
 
   getTypeDescription(type) {
     const descriptions = {
-      // Core Development
-      'Development Tasks': 'Implementation and coding tasks',
-      'User Stories': 'Feature requirements from user perspective',
-      'Features': 'New functionality development',
-      'Epics': 'Large initiatives spanning multiple sprints',
-      
-      // Quality & Testing
-      'Bug Fixes': 'Defect resolution and fixes',
-      'Testing': 'Quality assurance and testing activities',
-      'Code Review': 'Peer review and code quality',
-      
-      // Infrastructure & DevOps
-      'Infrastructure': 'System and infrastructure work',
-      'Deployment': 'Release and deployment activities',
-      'DevOps': 'CI/CD and automation tasks',
-      
-      // Documentation & Planning
-      'Documentation': 'Technical and user documentation',
-      'Research': 'Technical research and investigation',
-      'Technical Spikes': 'Proof of concept and exploration',
-      'Investigation': 'Problem analysis and research',
-      
-      // Design & UX
-      'Design': 'Visual and interaction design',
-      'UI/UX Work': 'User interface and experience design'
+      'tasks': 'Development and implementation tasks',
+      'bugs': 'Defect resolution and bug fixes',
+      'design': 'Design and documentation work',
+      'others': 'Other work items and activities'
     };
     
     return descriptions[type] || 'Work item category';
@@ -1881,55 +1827,6 @@ class MetricsCalculatorService {
     }
   }
 
-  /**
-   * Calculate productivity score for team
-   * @private
-   */
-  calculateProductivityScore(teamPerformance) {
-    // Simple productivity calculation based on completion rates and velocity
-    const completionRate = teamPerformance.completionRate || 0;
-    const velocity = teamPerformance.velocity || 0;
-    const qualityScore = teamPerformance.qualityScore || 0;
-    
-    return ((completionRate * 0.4) + (Math.min(velocity / 40, 1) * 100 * 0.4) + (qualityScore * 0.2)).toFixed(1);
-  }
-
-  /**
-   * Get collaboration score for team
-   * @private
-   */
-  async getCollaborationScore(teamId) {
-    // Mock collaboration score based on code reviews, pair programming, etc.
-    return {
-      value: 'Processing...',
-      status: 'processing', 
-      message: 'Analyzing team collaboration patterns from Git commits and code reviews',
-      dataSource: 'pending_collaboration_analysis'
-    };
-  }
-
-  /**
-   * Get team satisfaction score
-   * @private
-   */
-  async getTeamSatisfaction(teamId) {
-    // Mock satisfaction score - in production would come from surveys
-    return {
-      value: 'Processing...',
-      status: 'processing',
-      message: 'Integrating with team satisfaction survey systems',
-      dataSource: 'pending_survey_integration'
-    };
-  }
-
-  /**
-   * Calculate team utilization
-   * @private
-   */
-  calculateUtilization(teamPerformance) {
-    // Mock utilization based on story points and capacity
-    return (Math.random() * 20 + 75).toFixed(1);
-  }
 
   /**
    * Analyze team workload distribution

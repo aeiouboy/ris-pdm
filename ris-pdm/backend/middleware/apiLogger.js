@@ -238,15 +238,27 @@ const systemResourceMonitor = (req, res, next) => {
   const memUsage = process.memoryUsage();
   const cpuUsage = process.cpuUsage();
   
-  // Log resource usage if concerning
-  if (memUsage.rss > 100 * 1024 * 1024) { // 100MB
+  // Log resource usage for monitoring
+  const rssInMB = memUsage.rss / 1024 / 1024;
+  
+  // Debug log for moderate memory usage (100-250MB)
+  if (rssInMB > 100 && rssInMB <= 250) {
+    logger.debug('Moderate Memory Usage', {
+      rss: `${rssInMB.toFixed(2)}MB`,
+      path: req.originalUrl
+    });
+  }
+  
+  // Warning for high memory usage (>250MB)
+  if (rssInMB > 250) {
     logger.warn('High Memory Usage Detected', {
       memoryUsage: {
-        rss: `${(memUsage.rss / 1024 / 1024).toFixed(2)}MB`,
+        rss: `${rssInMB.toFixed(2)}MB`,
         heapTotal: `${(memUsage.heapTotal / 1024 / 1024).toFixed(2)}MB`,
         heapUsed: `${(memUsage.heapUsed / 1024 / 1024).toFixed(2)}MB`
       },
-      path: req.originalUrl
+      path: req.originalUrl,
+      threshold: '250MB'
     });
   }
   

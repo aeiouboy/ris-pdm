@@ -24,6 +24,8 @@ const metricRoutes = require('./routes/metrics');
 const userRoutes = require('./routes/users');
 const workItemRoutes = require('./routes/workitems');
 const exportRoutes = require('./routes/exports');
+const { router: webhookRoutes, initializeWebhookService } = require('./src/routes/webhooks');
+const { router: authRoutes, initializeOAuthService } = require('./src/routes/auth');
 
 // Import services
 const AzureDevOpsService = require('./src/services/azureDevOpsService');
@@ -99,6 +101,21 @@ const initializeServices = async () => {
       }
     }, 2000); // Wait 2 seconds after server start
     
+    // Initialize webhook service
+    initializeWebhookService({
+      cacheService: cacheService,
+      webSocketService: io,
+      azureDevOpsService: azureDevOpsService,
+      realtimeService: realtimeService
+    });
+    
+    // Initialize OAuth service for production authentication
+    initializeOAuthService({
+      clientId: process.env.AZURE_OAUTH_CLIENT_ID,
+      clientSecret: process.env.AZURE_OAUTH_CLIENT_SECRET,
+      redirectUri: process.env.AZURE_OAUTH_REDIRECT_URI
+    });
+    
     logger.info('✅ All performance services initialized');
   } catch (error) {
     logger.warn('⚠️ Performance services initialization failed, using fallback:', error.message);
@@ -150,53 +167,47 @@ process.on('SIGINT', () => {
 
 // gracefulShutdown function defined later in the file
 
-// Rate limiting
-// More generous rate limiting for dashboard application
-const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 1 * 60 * 1000, // 1 minute windows
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 300, // 300 requests per minute (5 requests per second)
-  message: {
-    error: 'Too many requests from this IP, please try again later.',
-    code: 'RATE_LIMIT_EXCEEDED',
-    retryAfter: '60 seconds'
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-  // Skip rate limiting for certain conditions
-  skip: (req, res) => {
-    // Skip for health checks and static assets
-    return req.path.includes('/health') || req.path.includes('/favicon');
+// Enhanced Security Middleware (Phase 1 Implementation)
+const { initializeSecurity } = require('./middleware/securityHeaders');
+const { createSmartRateLimit } = require('./middleware/securityRateLimit');
+const { validateContentType, createBodySizeLimit } = require('./middleware/inputValidation');
+
+// Initialize enhanced security headers and policies
+initializeSecurity(app);
+
+// Enhanced rate limiting with Redis backend and tiered strategy
+let smartRateLimit;
+const initializeSecurityMiddleware = async () => {
+  try {
+    smartRateLimit = await createSmartRateLimit();
+    app.use(smartRateLimit);
+    logger.info('✅ Enhanced security middleware initialized');
+  } catch (error) {
+    logger.warn('⚠️ Enhanced security middleware failed, using fallback:', error.message);
+    
+    // Fallback to basic rate limiting
+    const limiter = rateLimit({
+      windowMs: 1 * 60 * 1000, // 1 minute
+      max: 300,
+      message: { error: 'Too many requests', retryAfter: '60 seconds' },
+      standardHeaders: true,
+      legacyHeaders: false,
+      skip: (req) => req.path.includes('/health') || req.path.includes('/favicon')
+    });
+    app.use('/api/', limiter);
   }
-});
+};
 
-// Security middleware
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'"],
-      imgSrc: ["'self'", "data:", "https:"],
-    },
-  },
-}));
+// Enhanced body size protection and content-type validation
+app.use(createBodySizeLimit('2mb')); // Reduced from 10mb for better DoS protection
+app.use(validateContentType(['application/json', 'application/x-www-form-urlencoded']));
 
-// CORS configuration
-app.use(cors({
-  origin: [
-    process.env.CORS_ORIGIN || 'http://localhost:3000',
-    'http://localhost:5173',
-    'http://localhost:5174'
-  ],
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-}));
+// CORS is now handled by enhanced security headers middleware
 
 // Enhanced compression and optimization middleware
 app.use(compression());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '2mb' })); // Reduced for security
+app.use(express.urlencoded({ extended: true, limit: '2mb' })); // Reduced for security
 
 // Logging middleware
 if (process.env.NODE_ENV !== 'test') {
@@ -207,8 +218,7 @@ if (process.env.NODE_ENV !== 'test') {
   }));
 }
 
-// Apply rate limiting to all requests
-app.use('/api/', limiter);
+// Rate limiting is now handled by enhanced security middleware
 
 // Apply Azure DevOps monitoring middleware
 app.use('/api/', systemResourceMonitor);
@@ -253,12 +263,18 @@ app.set('realtimeService', realtimeService);
 app.set('cacheService', cacheService);
 app.set('requestBatchingService', () => requestBatchingService);
 
+// Authentication Routes (no middleware required for auth endpoints)
+app.use('/auth', authRoutes);
+
 // API Routes (protected by authentication middleware)
 app.use('/api/products', authMiddleware, productRoutes);
 app.use('/api/metrics', authMiddleware, metricRoutes);
 app.use('/api/users', authMiddleware, userRoutes);
 app.use('/api/workitems', authMiddleware, workItemRoutes);
 app.use('/api/exports', authMiddleware, exportRoutes);
+
+// Webhook Routes (no authentication required for Azure DevOps webhooks)
+app.use('/webhooks', webhookRoutes);
 
 // 404 handler for unmatched routes
 app.use('*', (req, res) => {
@@ -320,6 +336,9 @@ server.listen(PORT, async () => {
   
   // Initialize performance services after server start
   await initializeServices();
+  
+  // Initialize enhanced security middleware
+  await initializeSecurityMiddleware();
 });
 
 // Handle unhandled promise rejections

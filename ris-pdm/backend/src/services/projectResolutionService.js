@@ -101,6 +101,47 @@ class ProjectResolutionService {
   }
 
   /**
+   * Resolve project identifier to Azure DevOps project name
+   * Handles both project names and GUIDs
+   * @param {string} projectIdentifier - Frontend project name or GUID
+   * @returns {Promise<string>} Azure DevOps project name
+   */
+  async resolveProjectName(projectIdentifier) {
+    if (!projectIdentifier) {
+      throw new Error('Project identifier is required');
+    }
+
+    // If it's already a GUID, resolve it to project info and return name
+    if (this.isGuid(projectIdentifier)) {
+      const projectInfo = await this.resolveProjectInfo(projectIdentifier);
+      return projectInfo.name;
+    }
+
+    // Check if project is enabled in our mapping
+    if (!isProjectEnabled(projectIdentifier)) {
+      // If not in mapping but looks like a project name, return as-is
+      // This handles cases where the project name is passed directly
+      logger.warn(`Project ${projectIdentifier} is not in mapping, returning as-is`);
+      return projectIdentifier;
+    }
+
+    try {
+      // Map frontend project to Azure DevOps project name
+      const azureProjectName = mapFrontendProjectToAzure(projectIdentifier);
+      if (!azureProjectName) {
+        // If no mapping found, return the original identifier as project name
+        logger.warn(`No Azure DevOps mapping found for project: ${projectIdentifier}, using as-is`);
+        return projectIdentifier;
+      }
+
+      return azureProjectName;
+    } catch (error) {
+      logger.warn(`Failed to resolve project name for ${projectIdentifier}, using as-is:`, error.message);
+      return projectIdentifier;
+    }
+  }
+
+  /**
    * Resolve project GUID back to project information
    * @param {string} projectGuid - Azure DevOps project GUID
    * @returns {Promise<object>} Project information

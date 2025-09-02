@@ -19,6 +19,46 @@ const Dashboard = () => {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   
+  // Sprint data for resolving sprint paths
+  const [sprintData, setSprintData] = useState([]);
+  
+  // Fetch sprint data for path resolution
+  useEffect(() => {
+    const fetchSprintData = async () => {
+      try {
+        const response = await axios.get('/api/metrics/sprints');
+        if (response.data && response.data.success && response.data.data) {
+          setSprintData(response.data.data);
+        }
+      } catch (error) {
+        console.warn('Could not fetch sprint data for path resolution:', error);
+      }
+    };
+    
+    fetchSprintData();
+  }, []);
+  
+  // Helper function to resolve sprint ID to iteration path
+  const getSprintIterationPath = (sprintId) => {
+    if (!sprintId || sprintId === 'all-sprints') return null;
+    
+    // Find sprint from mock data
+    const sprint = sprintData.find(s => s.id === sprintId);
+    if (sprint?.path) {
+      console.log(`📊 Resolved sprint ${sprintId} → ${sprint.path}`);
+      return sprint.path;
+    }
+    
+    // Fallback for 'current' when no sprint data loaded yet
+    if (sprintId === 'current') {
+      console.log(`📊 Fallback path for current sprint → Project\\Sprint 25`);
+      return 'Project\\Sprint 25'; 
+    }
+    
+    console.log(`📊 No path found for sprint: ${sprintId}`);
+    return null;
+  };
+  
   // Swipe navigation for mobile
   const swipeNavigation = useSwipeNavigation({ 
     enabled: true, 
@@ -411,7 +451,7 @@ const Dashboard = () => {
       {/* Enhanced Task Distribution & Bug Classification Section */}
       <TaskDistributionDashboard 
         productId={selectedProduct !== 'all-projects' ? selectedProduct : null}
-        iterationPath={selectedSprint !== 'all-sprints' ? selectedSprint : null}
+        iterationPath={getSprintIterationPath(selectedSprint)}
         className="mb-6"
       />
     </div>

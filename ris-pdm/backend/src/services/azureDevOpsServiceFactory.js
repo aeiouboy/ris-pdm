@@ -4,12 +4,25 @@
  */
 
 const AzureDevOpsService = require('./azureDevOpsService');
-const { azureDevOpsConfig, validateConfig, getEnvironmentConfig } = require('../config/azureDevOpsConfig');
+const { validateConfig, getEnvironmentConfig } = require('../config/azureDevOpsConfig');
+
+// OAuth service - will be set when auth module is loaded
+let oauthService = null;
 
 class AzureDevOpsServiceFactory {
   constructor() {
     this.instances = new Map();
     this.defaultConfig = getEnvironmentConfig();
+    this.oauthService = null;
+  }
+  
+  /**
+   * Set OAuth service instance for OAuth authentication
+   * @param {AzureOAuthService} service - OAuth service instance
+   */
+  setOAuthService(service) {
+    this.oauthService = service;
+    oauthService = service;
   }
 
   /**
@@ -52,7 +65,7 @@ class AzureDevOpsServiceFactory {
   }
 
   /**
-   * Create service instance for specific organization/project
+   * Create service instance for specific organization/project with PAT
    * @param {string} organization - Azure DevOps organization
    * @param {string} project - Azure DevOps project
    * @param {string} pat - Personal Access Token
@@ -64,11 +77,53 @@ class AzureDevOpsServiceFactory {
       organization,
       project,
       pat,
+      authType: 'PAT',
       ...additionalConfig
     };
 
-    const instanceKey = `${organization}_${project}`;
+    const instanceKey = `${organization}_${project}_PAT`;
     return this.create(config, instanceKey);
+  }
+
+  /**
+   * Create service instance with OAuth authentication
+   * @param {string} organization - Azure DevOps organization
+   * @param {string} project - Azure DevOps project
+   * @param {string} userId - User ID for OAuth tokens
+   * @param {object} additionalConfig - Additional configuration
+   * @returns {AzureDevOpsService} Service instance
+   */
+  createWithOAuth(organization, project, userId, additionalConfig = {}) {
+    if (!this.oauthService) {
+      throw new Error('OAuth service not configured. Call setOAuthService() first.');
+    }
+
+    const config = {
+      organization,
+      project,
+      authType: 'OAuth',
+      oauthService: this.oauthService,
+      userId,
+      ...additionalConfig
+    };
+
+    const instanceKey = `${organization}_${project}_OAuth_${userId}`;
+    return this.create(config, instanceKey);
+  }
+
+  /**
+   * Create service instance for authenticated user (OAuth)
+   * @param {string} userId - User ID for OAuth tokens
+   * @param {object} additionalConfig - Additional configuration
+   * @returns {AzureDevOpsService} Service instance
+   */
+  createForUser(userId, additionalConfig = {}) {
+    return this.createWithOAuth(
+      process.env.AZURE_DEVOPS_ORG,
+      process.env.AZURE_DEVOPS_PROJECT,
+      userId,
+      additionalConfig
+    );
   }
 
   /**

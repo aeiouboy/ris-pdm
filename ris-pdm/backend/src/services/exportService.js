@@ -913,7 +913,7 @@ class ExportService {
   }
 
   // Additional helper methods for team data export
-  async createTeamSummarySheet(sheet, teamPerformanceData, period) {
+  async createTeamSummarySheet(sheet, teamPerformanceData) {
     sheet.columns = [
       { header: 'Name', key: 'name', width: 25 },
       { header: 'Email', key: 'email', width: 35 },
@@ -950,7 +950,7 @@ class ExportService {
     // Calculate team averages and best performers
     const metrics = this.calculateTeamMetrics(teamPerformanceData);
     
-    Object.entries(metrics).forEach(([key, data]) => {
+    Object.entries(metrics).forEach(([, data]) => {
       sheet.addRow({
         metric: data.label,
         teamAvg: data.average.toFixed(1),

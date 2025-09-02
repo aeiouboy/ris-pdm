@@ -517,6 +517,138 @@ class RealtimeService extends EventEmitter {
   }
 
   /**
+   * Handle webhook event for real-time updates
+   * @param {object} webhookEvent - Webhook event data
+   */
+  async handleWebhookEvent(webhookEvent) {
+    try {
+      const { eventType, resource, eventId } = webhookEvent;
+      
+      logger.info(`📡 Processing webhook event for real-time updates: ${eventType} - ${eventId}`);
+      
+      // Determine which subscriptions should receive this update
+      const relevantSubscriptions = this.findRelevantSubscriptions(webhookEvent);
+      
+      if (relevantSubscriptions.length === 0) {
+        logger.debug(`No active subscriptions for webhook event: ${eventType}`);
+        return;
+      }
+      
+      // Create real-time update payload
+      const updatePayload = {
+        type: 'webhook-event',
+        eventType,
+        eventId,
+        workItem: resource,
+        timestamp: new Date().toISOString(),
+        isRealtime: true
+      };
+      
+      // Broadcast to relevant clients
+      let totalClientCount = 0;
+      for (const subscription of relevantSubscriptions) {
+        for (const clientId of subscription.clients) {
+          const socket = this.io.sockets.sockets.get(clientId);
+          if (socket) {
+            socket.emit('workitem-update', updatePayload);
+            totalClientCount++;
+          }
+        }
+      }
+      
+      logger.info(`📡 Webhook event broadcasted to ${totalClientCount} client(s)`);
+      
+      // Force refresh affected data for next polling cycle
+      await this.refreshAffectedSubscriptions(webhookEvent);
+      
+    } catch (error) {
+      logger.error('❌ Error handling webhook event for real-time updates:', error);
+    }
+  }
+  
+  /**
+   * Find subscriptions that should receive this webhook update
+   * @param {object} webhookEvent - Webhook event data
+   * @returns {Array} Array of relevant subscriptions
+   */
+  findRelevantSubscriptions(webhookEvent) {
+    const { eventType, resource } = webhookEvent;
+    const relevantSubs = [];
+    
+    for (const [subscriptionKey, subscription] of this.subscriptions.entries()) {
+      // Check if subscription should receive this update
+      if (this.shouldReceiveWebhookUpdate(subscription, webhookEvent)) {
+        relevantSubs.push(subscription);
+      }
+    }
+    
+    return relevantSubs;
+  }
+  
+  /**
+   * Check if a subscription should receive a webhook update
+   * @param {object} subscription - Subscription details
+   * @param {object} webhookEvent - Webhook event data
+   * @returns {boolean} Whether subscription should receive update
+   */
+  shouldReceiveWebhookUpdate(subscription, webhookEvent) {
+    const { eventType, resource } = webhookEvent;
+    
+    // All subscriptions get work item updates
+    if (subscription.type === 'workitems' || subscription.type === 'all') {
+      return true;
+    }
+    
+    // Dashboard subscriptions get work item updates
+    if (subscription.type === 'dashboard' || subscription.type === 'overview') {
+      return true;
+    }
+    
+    // Individual subscriptions get updates if assigned to them
+    if (subscription.type === 'individual' && subscription.userId) {
+      const assignedTo = resource?.fields?.['System.AssignedTo'];
+      if (assignedTo && assignedTo.uniqueName) {
+        return assignedTo.uniqueName === subscription.userId;
+      }
+    }
+    
+    return false;
+  }
+  
+  /**
+   * Refresh subscriptions affected by webhook event
+   * @param {object} webhookEvent - Webhook event data
+   */
+  async refreshAffectedSubscriptions(webhookEvent) {
+    try {
+      const affectedTypes = new Set();
+      
+      // Determine which types of data need refreshing
+      affectedTypes.add('workitems');
+      affectedTypes.add('dashboard');
+      affectedTypes.add('overview');
+      
+      // If assigned to someone, refresh individual metrics
+      const assignedTo = webhookEvent.resource?.fields?.['System.AssignedTo'];
+      if (assignedTo && assignedTo.uniqueName) {
+        affectedTypes.add('individual');
+      }
+      
+      // Force refresh for affected subscription types
+      for (const [subscriptionKey, subscription] of this.subscriptions.entries()) {
+        if (affectedTypes.has(subscription.type)) {
+          // Mark for immediate refresh on next polling cycle
+          subscription.dataHash = null; // Force change detection
+          logger.debug(`Marked subscription ${subscriptionKey} for refresh`);
+        }
+      }
+      
+    } catch (error) {
+      logger.error('❌ Error refreshing affected subscriptions:', error);
+    }
+  }
+
+  /**
    * Force refresh all subscriptions
    */
   async forceRefresh() {

@@ -26,7 +26,7 @@ class PerformanceMonitorService extends EventEmitter {
       metricsRetention: 60 * 60 * 1000, // 1 hour
       samplingInterval: 30000, // 30 seconds
       slowRequestThreshold: 1000, // 1 second
-      highMemoryThreshold: 0.8, // 80%
+      highMemoryThreshold: 0.95, // 95%
       maxMetricsCount: 10000
     };
     
@@ -461,12 +461,12 @@ class PerformanceMonitorService extends EventEmitter {
     }
     
     // High memory usage alert
-    if (systemStats.memory.current > 80) {
+    if (systemStats.memory.current > 95) {
       alerts.push({
         type: 'memory',
         severity: 'warning',
         message: `High memory usage: ${systemStats.memory.current.toFixed(2)}%`,
-        threshold: 80
+        threshold: 95
       });
     }
     

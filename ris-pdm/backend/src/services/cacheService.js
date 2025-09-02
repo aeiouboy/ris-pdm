@@ -68,8 +68,7 @@ class CacheService {
     const startTime = Date.now();
     const { 
       ttl = redisConfig.cacheTTL.workItems,
-      useMemoryCache = true,
-      compress = false 
+      useMemoryCache = true
     } = options;
 
     let success = false;
