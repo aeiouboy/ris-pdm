@@ -9,12 +9,12 @@ import DateRangePicker from '../components/DateRangePicker';
 import { PLCard, VelocityCard, BugCountCard, SatisfactionCard } from '../components/KPICard';
 import SprintBurndownChart from '../components/SprintBurndownChart';
 import TeamVelocityChart from '../components/TeamVelocityChart';
-import TaskDistributionChart from '../components/TaskDistributionChart';
+import TaskDistributionDashboard from '../components/TaskDistributionDashboard';
 import useSwipeNavigation from '../hooks/useSwipeNavigation.jsx';
 
 const Dashboard = () => {
   // Filter states
-  const [selectedProduct, setSelectedProduct] = useState('Product - Luke');
+  const [selectedProduct, setSelectedProduct] = useState('Product - Partner Management Platform');
   const [selectedSprint, setSelectedSprint] = useState('current');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -49,12 +49,10 @@ const Dashboard = () => {
   const [kpiData, setKpiData] = useState(null);
   const [burndownData, setBurndownData] = useState([]);
   const [velocityTrendData, setVelocityTrendData] = useState([]);
-  const [taskDistributionData, setTaskDistributionData] = useState([]);
   const [componentLoading, setComponentLoading] = useState({
     kpis: false,
     burndown: false,
-    velocity: false,
-    tasks: false
+    velocity: false
   });
 
   // Use real-time data if available, otherwise use fallback
@@ -197,32 +195,6 @@ const Dashboard = () => {
     fetchVelocityTrend();
   }, [selectedProduct]);
 
-  // Fetch Task Distribution data
-  useEffect(() => {
-    const fetchTaskDistribution = async () => {
-      setComponentLoading(prev => ({ ...prev, tasks: true }));
-      try {
-        const params = new URLSearchParams({
-          period: 'sprint',
-          ...(selectedProduct !== 'all-projects' && { productId: selectedProduct }),
-          ...(selectedSprint !== 'all-sprints' && { sprintId: selectedSprint })
-        });
-        
-        console.log('🔍 Fetching task distribution with params:', params.toString());
-        const response = await axios.get(`/api/metrics/task-distribution?${params}`);
-        console.log('📊 Task distribution response:', response.data);
-        setTaskDistributionData(response.data.data);
-      } catch (error) {
-        console.error('❌ Error fetching task distribution data:', error);
-        console.log('🔄 Task distribution data fetch failed - leaving empty to show error state');
-        setTaskDistributionData([]); // Empty array will show "no data" state instead of sample data
-      } finally {
-        setComponentLoading(prev => ({ ...prev, tasks: false }));
-      }
-    };
-
-    fetchTaskDistribution();
-  }, [selectedProduct, selectedSprint]);
 
   if (loading) {
     return (
@@ -352,14 +324,7 @@ const Dashboard = () => {
       </div>
 
       {/* Additional Charts Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Task Distribution */}
-        <TaskDistributionChart 
-          data={taskDistributionData}
-          loading={componentLoading.tasks}
-          height={300}
-        />
-        
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
         {/* Team Performance Summary */}
         <div className="bg-white p-6 rounded-lg shadow-dashboard border">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Individual Performance</h3>
@@ -442,6 +407,13 @@ const Dashboard = () => {
           </div>
         </div>
       </div>
+
+      {/* Enhanced Task Distribution & Bug Classification Section */}
+      <TaskDistributionDashboard 
+        productId={selectedProduct !== 'all-projects' ? selectedProduct : null}
+        iterationPath={selectedSprint !== 'all-sprints' ? selectedSprint : null}
+        className="mb-6"
+      />
     </div>
   );
 };

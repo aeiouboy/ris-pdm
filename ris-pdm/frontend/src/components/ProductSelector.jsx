@@ -42,12 +42,15 @@ const ProductSelector = ({ selectedProduct, onProductChange, products = [], clas
         <div className="flex items-center justify-between">
           <div className="flex items-center min-w-0">
             <div className="flex-shrink-0 w-8 h-8 mr-3">
-              {currentProduct.logo ? (
-                <img 
-                  src={currentProduct.logo} 
-                  alt={currentProduct.name}
-                  className="h-8 w-8 object-contain"
-                />
+              {currentProduct.icon ? (
+                <div 
+                  className="w-8 h-8 rounded-lg flex items-center justify-center"
+                  style={{ backgroundColor: currentProduct.color || '#3B82F6' }}
+                >
+                  <span className="text-lg">
+                    {currentProduct.icon}
+                  </span>
+                </div>
               ) : (
                 <div 
                   className="w-8 h-8 rounded-lg flex items-center justify-center"
@@ -94,12 +97,15 @@ const ProductSelector = ({ selectedProduct, onProductChange, products = [], clas
               >
                 <div className="flex items-center">
                   <div className="flex-shrink-0 w-8 h-8 mr-3">
-                    {product.logo ? (
-                      <img 
-                        src={product.logo} 
-                        alt={product.name}
-                        className="h-8 w-8 object-contain"
-                      />
+                    {product.icon ? (
+                      <div 
+                        className="w-8 h-8 rounded-lg flex items-center justify-center"
+                        style={{ backgroundColor: product.color || '#3B82F6' }}
+                      >
+                        <span className="text-lg">
+                          {product.icon}
+                        </span>
+                      </div>
                     ) : (
                       <div 
                         className="w-8 h-8 rounded-lg flex items-center justify-center"

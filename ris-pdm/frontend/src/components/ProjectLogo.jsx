@@ -23,13 +23,11 @@ const ProjectLogo = ({
 
   return (
     <div className={`flex items-center ${className}`}>
-      {/* Logo Image/Avatar */}
-      <div className={`${sizeClasses[size]} flex-shrink-0`}>
-        <img 
-          src={brandingConfig.logo.src} 
-          alt={brandingConfig.logo.alt} 
-          className="h-full w-full object-contain"
-        />
+      {/* Project Icon */}
+      <div className={`${sizeClasses[size]} flex-shrink-0 rounded-lg flex items-center justify-center`} style={{ backgroundColor: brandingConfig.colors.primary }}>
+        <span className={`${textSizeClasses[size]} text-white`}>
+          📊
+        </span>
       </div>
       
       {/* Project Name */}

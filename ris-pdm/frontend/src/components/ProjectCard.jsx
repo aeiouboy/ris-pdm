@@ -20,7 +20,7 @@ const ProjectCard = ({
     large: 'p-6'
   };
 
-  const logoSizes = {
+  const iconSizes = {
     small: 'h-8 w-8',
     default: 'h-12 w-12',
     large: 'h-16 w-16'
@@ -33,14 +33,17 @@ const ProjectCard = ({
     >
       {/* Project Header */}
       <div className="flex items-start space-x-3">
-        {/* Project Logo */}
-        <div className={`flex-shrink-0 ${logoSizes[size]}`}>
-          {project.logo ? (
-            <img 
-              src={project.logo} 
-              alt={project.name}
-              className="h-full w-full object-contain"
-            />
+        {/* Project Icon */}
+        <div className={`flex-shrink-0 ${iconSizes[size]}`}>
+          {project.icon ? (
+            <div 
+              className="w-full h-full rounded-lg flex items-center justify-center"
+              style={{ backgroundColor: project.color }}
+            >
+              <span className="text-2xl">
+                {project.icon}
+              </span>
+            </div>
           ) : (
             <div 
               className="w-full h-full rounded-lg flex items-center justify-center"
