@@ -216,7 +216,7 @@ const SprintBurndownChart = React.memo(({
           </div>
           <div>
             <div className="text-2xl font-bold text-green-600">
-              {((chartData[0]?.actualRemaining || 0) - currentActual).toFixed(0)}
+              {((chartData[0]?.idealRemaining || 0) - currentActual).toFixed(0)}
             </div>
             <div className="text-sm text-gray-500">Completed</div>
           </div>

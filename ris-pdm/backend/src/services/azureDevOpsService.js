@@ -12,9 +12,17 @@ const logger = require('../../utils/logger');
 const fetch = globalThis.fetch;
 const cacheService = require('./cacheService');
 const AzureIterationResolver = require('./azureIterationResolver');
+const IterationMappingService = require('./iterationMappingService');
 
 class AzureDevOpsService {
   constructor(config = {}) {
+    // Check if Azure DevOps is disabled
+    this.isDisabled = process.env.DISABLE_AZURE_DEVOPS === 'true';
+    if (this.isDisabled) {
+      logger.info('🚫 Azure DevOps API disabled by DISABLE_AZURE_DEVOPS flag');
+      return;
+    }
+    
     this.organization = config.organization || process.env.AZURE_DEVOPS_ORG;
     this.project = config.project || process.env.AZURE_DEVOPS_PROJECT;
     this.pat = config.pat || process.env.AZURE_DEVOPS_PAT;
@@ -52,8 +60,9 @@ class AzureDevOpsService {
       teamMembers: 1800,   // 30 minutes (seconds)
     };
     
-    // Initialize iteration resolver
+    // Initialize iteration resolver and mapping service
     this.iterationResolver = new AzureIterationResolver(this);
+    this.iterationMapper = new IterationMappingService();
     
     this.validateConfig();
     this.setupAuth();
@@ -242,6 +251,9 @@ class AzureDevOpsService {
    * @returns {Promise<object>} Work items query result
    */
   async getWorkItems(queryOptions = {}) {
+    if (this.isDisabled) {
+      return { workItems: [], totalCount: 0, disabled: true };
+    }
     const {
       workItemTypes = ['Task', 'Bug', 'User Story', 'Feature'],
       states = null, // If null, excludes only 'Removed'
@@ -375,6 +387,10 @@ class AzureDevOpsService {
    * @returns {Promise<object>} Detailed work item data
    */
   async getWorkItemDetails(workItemIds, fields = null, projectName = null) {
+    if (this.isDisabled) {
+      return { workItems: [], projectName: projectName || this.project, disabled: true };
+    }
+    
     if (!Array.isArray(workItemIds) || workItemIds.length === 0) {
       throw new Error('Work item IDs must be a non-empty array');
     }
@@ -452,6 +468,34 @@ class AzureDevOpsService {
       return result;
       
     } catch (error) {
+      // Handle work item permission/existence errors gracefully
+      if (error.message && error.message.includes('TF401232')) {
+        // Work item doesn't exist or no permissions - log warning but don't fail completely
+        const workItemMatch = error.message.match(/Work item (\d+)/);
+        const workItemId = workItemMatch ? workItemMatch[1] : 'unknown';
+        logger.warn(`Work item ${workItemId} is inaccessible (no permissions or doesn't exist). Continuing with available work items.`);
+        
+        // Return partial results - filter out the problematic work item
+        const accessibleWorkItems = workItemIds.filter(id => id.toString() !== workItemId);
+        if (accessibleWorkItems.length > 0) {
+          logger.info(`Retrying with ${accessibleWorkItems.length} accessible work items (excluding ${workItemId})`);
+          try {
+            return await this.getWorkItemDetails(accessibleWorkItems, fields, projectName);
+          } catch (retryError) {
+            logger.warn(`Retry with accessible work items failed: ${retryError.message}`);
+          }
+        }
+        
+        // Return empty result instead of throwing error
+        return {
+          workItems: [],
+          count: 0,
+          fields: fields || [],
+          skippedItems: [workItemId],
+          warning: `Some work items (${workItemId}) were inaccessible due to permissions or non-existence`
+        };
+      }
+      
       logger.error('Error fetching work item details:', error);
       throw new Error(`Failed to fetch work item details: ${error.message}`);
     }
@@ -464,6 +508,10 @@ class AzureDevOpsService {
    * @returns {Promise<object>} Iterations data
    */
   async getIterations(teamName = null, timeframe = 'current') {
+    if (this.isDisabled) {
+      return { iterations: [], count: 0, team: teamName, timeframe, disabled: true };
+    }
+    
     // 🎯 FIXED: Use only the passed team name, no fallback to project name
     if (!teamName) {
       throw new Error('Team name is required for getIterations');
@@ -499,26 +547,13 @@ class AzureDevOpsService {
 
         const response = await this.makeRequest(endpoint);
       
-        // Enrich iterations with additional data
-        const enrichedIterations = await Promise.all(
-          response.value.map(async (iteration) => {
-            try {
-              // Get iteration work items
-              const iterationWorkItems = await this.getWorkItems({
-                iterationPath: iteration.path
-              });
-              
-              return {
-                ...iteration,
-                workItemCount: iterationWorkItems.totalCount,
-                workItems: iterationWorkItems.workItems.slice(0, 10) // Limit for performance
-              };
-            } catch (error) {
-              logger.warn(`Failed to enrich iteration ${iteration.name}:`, error.message);
-              return iteration;
-            }
-          })
-        );
+        // TEMP FIX: Skip iteration enrichment to prevent infinite loop
+        // TODO: Fix the iteration resolver loop issue
+        const enrichedIterations = response.value.map((iteration) => ({
+          ...iteration,
+          workItemCount: 0, // Placeholder
+          workItems: [] // Placeholder
+        }));
 
         const result = {
           iterations: enrichedIterations,
@@ -546,6 +581,71 @@ class AzureDevOpsService {
       timeframe,
       error: 'No valid team found for this project'
     };
+  }
+
+  /**
+   * Resolve iteration using intelligent mapping service
+   * Supports both DaaS and PMP iteration naming conventions
+   * @param {string} projectId - Frontend project identifier
+   * @param {string} requestedIteration - Requested iteration (e.g., 'current', 'DaaS 12', 'Delivery 4')
+   * @returns {Promise<object>} Resolved iteration information
+   */
+  async resolveIterationIntelligent(projectId, requestedIteration = 'current') {
+    try {
+      const azureProject = mapFrontendProjectToAzure(projectId);
+      const teamName = mapFrontendProjectToTeam(projectId);
+      
+      logger.info(`🎯 Intelligent iteration resolution: ${projectId} → ${azureProject}, iteration: ${requestedIteration}`);
+      
+      // Get available iterations from Azure DevOps
+      const iterationsResponse = await this.getIterations(teamName, 'all');
+      const availableIterations = iterationsResponse.iterations || [];
+      
+      // Use iteration mapping service to resolve
+      const resolution = await this.iterationMapper.resolveIteration(
+        projectId, 
+        requestedIteration, 
+        availableIterations
+      );
+      
+      if (resolution.success) {
+        logger.info(`✅ Resolved iteration: ${requestedIteration} → ${resolution.iteration} (${resolution.method})`);
+        return {
+          success: true,
+          originalRequest: requestedIteration,
+          resolvedIteration: resolution.iteration,
+          iterationPath: resolution.path,
+          method: resolution.method,
+          project: azureProject,
+          team: teamName,
+          ...resolution
+        };
+      } else {
+        logger.warn(`❌ Failed to resolve iteration: ${resolution.error}`);
+        return {
+          success: false,
+          originalRequest: requestedIteration,
+          project: azureProject,
+          team: teamName,
+          error: resolution.error,
+          availableIterations: availableIterations.map(i => i.name).slice(0, 10)
+        };
+      }
+      
+    } catch (error) {
+      logger.error(`Error in intelligent iteration resolution: ${error.message}`, {
+        projectId,
+        requestedIteration,
+        error: error.stack
+      });
+      
+      return {
+        success: false,
+        originalRequest: requestedIteration,
+        error: error.message,
+        fallbackRecommendation: 'Try using specific iteration names like "DaaS 12" or "Delivery 4"'
+      };
+    }
   }
 
   /**

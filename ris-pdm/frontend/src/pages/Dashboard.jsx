@@ -167,14 +167,24 @@ const Dashboard = () => {
     return () => clearTimeout(timeoutId);
   }, [realtimeData, realtimeLoading, fallbackData, fallbackLoading]);
 
+  // Helper function to normalize project ID for API calls
+  const normalizeProjectId = (projectId) => {
+    // Ensure we never send just "Product" - always use the full name
+    if (projectId === 'Product' || projectId === 'product') {
+      return 'Product - Partner Management Platform';
+    }
+    return projectId;
+  };
+
   // Fetch KPI data when filters change
   useEffect(() => {
     const fetchKPIData = async () => {
       setComponentLoading(prev => ({ ...prev, kpis: true }));
       try {
+        const normalizedProductId = normalizeProjectId(selectedProduct);
         const params = new URLSearchParams({
           period: 'sprint',
-          ...(selectedProduct !== 'all-projects' && { productId: selectedProduct }),
+          ...(normalizedProductId !== 'all-projects' && { productId: normalizedProductId }),
           ...(selectedSprint !== 'all-sprints' && { sprintId: selectedSprint })
         });
         
@@ -202,8 +212,9 @@ const Dashboard = () => {
     const fetchBurndownData = async () => {
       setComponentLoading(prev => ({ ...prev, burndown: true }));
       try {
+        const normalizedProductId = normalizeProjectId(selectedProduct);
         const params = new URLSearchParams({
-          ...(selectedProduct !== 'all-projects' && { productId: selectedProduct }),
+          ...(normalizedProductId !== 'all-projects' && { productId: normalizedProductId }),
           ...(selectedSprint !== 'all-sprints' && { sprintId: selectedSprint })
         });
         
@@ -231,10 +242,11 @@ const Dashboard = () => {
     const fetchVelocityTrend = async () => {
       setComponentLoading(prev => ({ ...prev, velocity: true }));
       try {
+        const normalizedProductId = normalizeProjectId(selectedProduct);
         const params = new URLSearchParams({
           period: 'sprint',
           range: '6',
-          ...(selectedProduct !== 'all-projects' && { productId: selectedProduct })
+          ...(normalizedProductId !== 'all-projects' && { productId: normalizedProductId })
         });
         
         const response = await axios.get(`/api/metrics/velocity-trend?${params}`, {
@@ -452,7 +464,7 @@ const Dashboard = () => {
                 // Navigate with current filter parameters
                 const params = new URLSearchParams();
                 if (selectedProduct && selectedProduct !== 'all-projects') {
-                  params.set('productId', selectedProduct);
+                  params.set('productId', normalizeProjectId(selectedProduct));
                 }
                 if (selectedSprint && selectedSprint !== 'all-sprints') {
                   params.set('sprintId', selectedSprint);
@@ -471,7 +483,7 @@ const Dashboard = () => {
 
       {/* Enhanced Task Distribution & Bug Classification Section */}
       <TaskDistributionDashboard 
-        productId={selectedProduct !== 'all-projects' ? selectedProduct : null}
+        productId={selectedProduct !== 'all-projects' ? normalizeProjectId(selectedProduct) : null}
         iterationPath={getSprintIterationPath(selectedSprint)}
         className="mb-6"
       />

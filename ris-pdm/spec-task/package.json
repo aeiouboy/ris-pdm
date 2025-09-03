@@ -1,0 +1,33 @@
+{
+  "name": "ris-pdm-testing-spec",
+  "version": "1.0.0",
+  "description": "Testing specification and implementation for RIS Performance Dashboard",
+  "main": "index.js",
+  "scripts": {
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "test:bug-classification": "jest --testNamePattern='Bug Classification' --verbose",
+    "test:integration": "jest tests/integration/ --verbose",
+    "playwright:test": "cd .. && npx playwright test",
+    "playwright:ui": "cd .. && npx playwright test --ui",
+    "playwright:install": "cd .. && npx playwright install"
+  },
+  "keywords": [
+    "testing",
+    "playwright",
+    "dashboard",
+    "metrics",
+    "azure-devops"
+  ],
+  "author": "RIS Development Team",
+  "license": "ISC",
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^6.3.3",
+    "@playwright/test": "^1.40.0"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}

@@ -24,6 +24,7 @@ const metricRoutes = require('./routes/metrics');
 const userRoutes = require('./routes/users');
 const workItemRoutes = require('./routes/workitems');
 const exportRoutes = require('./routes/exports');
+const iterationTestRoutes = require('./routes/iterationTest');
 const { router: webhookRoutes, initializeWebhookService } = require('./src/routes/webhooks');
 const { router: authRoutes, initializeOAuthService } = require('./src/routes/auth');
 
@@ -92,14 +93,18 @@ const initializeServices = async () => {
     });
     
     // Warm up cache with essential data
-    setTimeout(async () => {
-      try {
-        await requestBatchingService.warmUpCache();
-        logger.info('✅ Cache warmup completed');
-      } catch (error) {
-        logger.warn('Cache warmup failed:', error.message);
-      }
-    }, 2000); // Wait 2 seconds after server start
+    if (process.env.DISABLE_CACHE_WARMUP !== 'true') {
+      setTimeout(async () => {
+        try {
+          await requestBatchingService.warmUpCache();
+          logger.info('✅ Cache warmup completed');
+        } catch (error) {
+          logger.warn('Cache warmup failed:', error.message);
+        }
+      }, 2000); // Wait 2 seconds after server start
+    } else {
+      logger.info('🚫 Cache warmup disabled by DISABLE_CACHE_WARMUP flag');
+    }
     
     // Initialize webhook service
     initializeWebhookService({
@@ -272,6 +277,11 @@ app.use('/api/metrics', authMiddleware, metricRoutes);
 app.use('/api/users', authMiddleware, userRoutes);
 app.use('/api/workitems', authMiddleware, workItemRoutes);
 app.use('/api/exports', authMiddleware, exportRoutes);
+
+// Test Routes for iteration mapping (development only)
+if (process.env.NODE_ENV !== 'production') {
+  app.use('/api/iteration-test', iterationTestRoutes);
+}
 
 // Webhook Routes (no authentication required for Azure DevOps webhooks)
 app.use('/webhooks', webhookRoutes);

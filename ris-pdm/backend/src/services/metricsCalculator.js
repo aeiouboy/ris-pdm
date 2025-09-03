@@ -1332,13 +1332,16 @@ class MetricsCalculatorService {
 
     try {
       // Get work items for the specified period
-      const workItems = await this.getWorkItemsForPeriod({ productId, sprintId });
+      const workItems = await this.getWorkItemsForProduct(productId, { sprintId });
       
       // Calculate P/L metrics (mock implementation)
       const pl = await this.calculatePLMetrics(workItems);
       
-      // Calculate velocity metrics
+      // Calculate velocity metrics (completed story points)
       const velocity = calculateVelocity(workItems);
+      
+      // Calculate total committed story points for the sprint (all work items regardless of state)
+      const totalCommittedStoryPoints = workItems.reduce((sum, item) => sum + (item.storyPoints || 0), 0);
       
       // Calculate bug metrics
       const bugs = this.calculateBugMetrics(workItems);
@@ -1358,7 +1361,7 @@ class MetricsCalculatorService {
           dataSource: pl.dataSource
         },
         velocity: {
-          value: velocity.storyPoints,
+          value: totalCommittedStoryPoints, // ✅ UPDATED - showing committed story points (total planned for sprint)
           trend: velocity.trend || 0,
           trendValue: velocity.trendValue || '0%',
           period: 'Current Sprint',
@@ -1464,6 +1467,9 @@ class MetricsCalculatorService {
         });
       }
 
+      // Sort by sprint number in ascending order for chronological trend display
+      velocityTrend.sort((a, b) => a.sprintNumber - b.sprintNumber);
+      
       this.setCache(cacheKey, velocityTrend);
       return velocityTrend;
       
@@ -1522,11 +1528,21 @@ class MetricsCalculatorService {
     const bugs = workItems.filter(item => item.type === 'Bug');
     const openBugs = bugs.filter(bug => !['Closed', 'Done', 'Resolved'].includes(bug.state));
     
+    // Show total bugs (all bugs regardless of status)
+    const totalBugs = bugs.length;
+    const remainingBugs = openBugs.length;
+    
     return {
-      total: openBugs.length,
+      total: totalBugs, // ✅ UPDATED - showing total bugs (all bugs regardless of status)
       trend: -8,
       trendValue: '-8%',
-      resolved: bugs.length - openBugs.length
+      resolved: bugs.length - openBugs.length,
+      breakdown: {
+        total: bugs.length,
+        open: openBugs.length,
+        remaining: remainingBugs,
+        resolved: bugs.length - openBugs.length
+      }
     };
   }
 
@@ -1713,16 +1729,21 @@ class MetricsCalculatorService {
   }
 
   async getHistoricalSprints(range, productId) {
-    // Mock implementation - would query Azure DevOps for historical iterations
+    // Mock implementation using Delivery format to match PMP/DaaS conventions
     const sprints = [];
-    for (let i = range - 1; i >= 0; i--) {
-      sprints.push({
-        id: `sprint-${23 - i}`,
-        name: `Sprint ${23 - i}`,
-        number: 23 - i,
-        startDate: new Date(Date.now() - (i + 1) * 14 * 24 * 60 * 60 * 1000).toISOString(),
-        endDate: new Date(Date.now() - i * 14 * 24 * 60 * 60 * 1000).toISOString()
-      });
+    const currentDelivery = 4; // Current delivery number
+    
+    for (let i = 0; i < range; i++) {
+      const deliveryNumber = currentDelivery - i; // Start from current and go backwards
+      if (deliveryNumber > 0) { // Only create deliveries with valid numbers
+        sprints.push({
+          id: `delivery-${deliveryNumber}`,
+          name: `Delivery ${deliveryNumber}`,
+          number: deliveryNumber,
+          startDate: new Date(Date.now() - (i + 1) * 14 * 24 * 60 * 60 * 1000).toISOString(),
+          endDate: new Date(Date.now() - i * 14 * 24 * 60 * 60 * 1000).toISOString()
+        });
+      }
     }
     return sprints;
   }

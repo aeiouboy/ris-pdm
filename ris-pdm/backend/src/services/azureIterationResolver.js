@@ -9,7 +9,13 @@
  */
 
 const logger = require('../../utils/logger').child({ component: 'AzureIterationResolver' });
-const { mapFrontendProjectToTeam } = require('../config/projectMapping');
+const { 
+  mapFrontendProjectToTeam, 
+  getProjectIterationConfig, 
+  findCurrentIterationForProject 
+} = require('../config/projectMapping');
+// Using built-in fetch from Node.js 18+
+const fetch = globalThis.fetch;
 
 /**
  * Azure DevOps Iteration Path Resolver Service
@@ -21,14 +27,28 @@ class AzureIterationResolver {
     this.iterationCache = new Map();
     this.cacheTTL = 30 * 60 * 1000; // 30 minutes
     
-    // Common iteration patterns to try
+    // Common iteration patterns to try (fallback for projects without specific config)
     this.commonPatterns = [
       'Sprint {n}',
       'Sprint-{n}', 
       'Sprint {n:02d}',
       'S{n}',
-      'Iteration {n}'
+      'Iteration {n}',
+      'DaaS {n}',
+      'Delivery {n}'
     ];
+    
+    // Project-specific iteration patterns
+    this.projectPatterns = {
+      'Product - Data as a Service': {
+        patterns: ['DaaS {n}'],
+        regex: /^DaaS\s+(\d+)$/i
+      },
+      'Product - Partner Management Platform': {
+        patterns: ['Delivery {n}', 'Sprint {n}'],
+        regex: /^(Delivery|Sprint)\s+(\d+)$/i
+      }
+    };
   }
 
   /**
@@ -61,13 +81,13 @@ class AzureIterationResolver {
       // Handle special cases
       switch (requestedIteration.toLowerCase()) {
         case 'current':
-          resolvedPath = await this.findCurrentIteration(iterations);
+          resolvedPath = await this.findCurrentIteration(iterations, project);
           break;
         case 'latest':
           resolvedPath = this.findLatestIteration(iterations);
           break;
         default:
-          resolvedPath = await this.findIterationByPattern(iterations, requestedIteration);
+          resolvedPath = await this.findIterationByPattern(iterations, requestedIteration, project);
           break;
       }
 
@@ -105,29 +125,34 @@ class AzureIterationResolver {
       // Debug logging to see what teams we're trying
       logger.info(`🔍 Project: "${project}" → Mapped Team: "${mapFrontendProjectToTeam(project)}" → Final Team: "${correctTeamName}"`);
       
-      // 🎯 FIXED: Use the correctly mapped team name FIRST, avoiding wrong project names
-      const teamPatterns = [
-        correctTeamName,     // This is the CORRECT mapped team name from projectMapping.js
-        // Only add additional patterns if the mapped team is different from project name
-        ...(correctTeamName !== project ? [] : [`${project} Team`])
-      ].filter(Boolean); // Remove null/undefined values
-
-      for (const team of teamPatterns) {
-        try {
-          const iterations = await this.azureService.getIterations(team, 'current');
-          if (iterations && iterations.length > 0) {
-            logger.debug(`Found ${iterations.length} iterations for team: ${team}`);
-            return iterations;
-          }
-        } catch (error) {
-          logger.debug(`Team '${team}' not found, trying next pattern`);
-          continue;
+      // 🎯 FIXED: Call Azure DevOps API directly to avoid recursion
+      // Instead of calling azureService.getIterations (which creates recursion), call the API directly
+      const org = this.azureService.organization;
+      const pat = this.azureService.pat;
+      const apiVersion = this.azureService.apiVersion;
+      
+      const url = `https://dev.azure.com/${org}/${encodeURIComponent(project)}/${encodeURIComponent(correctTeamName)}/_apis/work/teamsettings/iterations?api-version=${apiVersion}`;
+      
+      logger.debug(`Calling Azure DevOps API directly: ${url}`);
+      
+      const auth = Buffer.from(':' + pat).toString('base64');
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': 'Basic ' + auth,
+          'Content-Type': 'application/json'
         }
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        logger.debug(`Azure DevOps API failed for team '${correctTeamName}': ${response.status} - ${errorText}`);
+        return [];
       }
-
-      // If no team-specific iterations found, don't try project-level with wrong team name
-      logger.warn(`Could not find valid team iterations for project: ${project}. No fallback to project-level.`);
-      return [];
+      
+      const data = await response.json();
+      logger.info(`✅ Found ${data.count} iterations for team: ${correctTeamName}`);
+      
+      return data.value || [];
 
     } catch (error) {
       logger.error(`Error getting project iterations: ${error.message}`);
@@ -136,14 +161,15 @@ class AzureIterationResolver {
   }
 
   /**
-   * Find the current active iteration
+   * Find the current active iteration with project-specific logic
    * @param {Array} iterations - Array of iteration objects
+   * @param {string} project - Project name for project-specific logic
    * @returns {string|null} Current iteration path
    */
-  async findCurrentIteration(iterations) {
+  async findCurrentIteration(iterations, project = null) {
     const now = new Date();
     
-    // Look for iteration that contains current date
+    // First try: Look for iteration that contains current date
     const currentIteration = iterations.find(iteration => {
       const startDate = new Date(iteration.attributes?.startDate);
       const finishDate = new Date(iteration.attributes?.finishDate);
@@ -152,7 +178,20 @@ class AzureIterationResolver {
     });
 
     if (currentIteration) {
+      logger.info(`Found current iteration by date: ${currentIteration.name} for project: ${project}`);
       return currentIteration.path;
+    }
+
+    // Second try: Use project-specific logic to find current iteration
+    if (project) {
+      const projectCurrentIteration = findCurrentIterationForProject(project, iterations);
+      if (projectCurrentIteration) {
+        const foundIteration = iterations.find(iter => iter.name === projectCurrentIteration);
+        if (foundIteration) {
+          logger.info(`Found current iteration by project logic: ${projectCurrentIteration} for project: ${project}`);
+          return foundIteration.path;
+        }
+      }
     }
 
     // Fallback: get the most recent iteration
@@ -160,7 +199,12 @@ class AzureIterationResolver {
       .filter(iter => iter.attributes?.startDate)
       .sort((a, b) => new Date(b.attributes.startDate) - new Date(a.attributes.startDate));
 
-    return sortedIterations.length > 0 ? sortedIterations[0].path : null;
+    if (sortedIterations.length > 0) {
+      logger.info(`Using most recent iteration as fallback: ${sortedIterations[0].name} for project: ${project}`);
+      return sortedIterations[0].path;
+    }
+
+    return null;
   }
 
   /**
@@ -177,35 +221,55 @@ class AzureIterationResolver {
   }
 
   /**
-   * Find iteration by pattern matching
+   * Find iteration by pattern matching with project-specific patterns
    * @param {Array} iterations - Array of iteration objects
-   * @param {string} pattern - Pattern to match (e.g., 'sprint-18')
+   * @param {string} pattern - Pattern to match (e.g., 'sprint-18', 'daas-12')
+   * @param {string} project - Project name for project-specific patterns
    * @returns {string|null} Matching iteration path
    */
-  async findIterationByPattern(iterations, pattern) {
+  async findIterationByPattern(iterations, pattern, project = null) {
     // Direct name match first
     let match = iterations.find(iter => 
       iter.name?.toLowerCase() === pattern.toLowerCase()
     );
     
     if (match) {
+      logger.info(`Found direct name match: ${pattern} → ${match.path}`);
       return match.path;
     }
 
-    // Pattern matching for sprint numbers
-    const sprintMatch = pattern.match(/sprint[-\s]*(\d+)/i);
-    if (sprintMatch) {
-      const sprintNumber = parseInt(sprintMatch[1]);
+    // Extract number from pattern
+    const numberMatch = pattern.match(/(\d+)/i);
+    if (numberMatch) {
+      const number = parseInt(numberMatch[1]);
       
-      // Try various patterns
+      // Try project-specific patterns first
+      if (project && this.projectPatterns[project]) {
+        const projectConfig = this.projectPatterns[project];
+        for (const template of projectConfig.patterns) {
+          const testName = template.replace('{n}', number).replace('{n:02d}', number.toString().padStart(2, '0'));
+          
+          match = iterations.find(iter => 
+            iter.name?.toLowerCase() === testName.toLowerCase()
+          );
+          
+          if (match) {
+            logger.info(`Found project-specific pattern match: ${pattern} → ${testName} → ${match.path}`);
+            return match.path;
+          }
+        }
+      }
+      
+      // Try common patterns as fallback
       for (const template of this.commonPatterns) {
-        const testName = template.replace('{n}', sprintNumber).replace('{n:02d}', sprintNumber.toString().padStart(2, '0'));
+        const testName = template.replace('{n}', number).replace('{n:02d}', number.toString().padStart(2, '0'));
         
         match = iterations.find(iter => 
           iter.name?.toLowerCase() === testName.toLowerCase()
         );
         
         if (match) {
+          logger.info(`Found common pattern match: ${pattern} → ${testName} → ${match.path}`);
           return match.path;
         }
       }
@@ -215,6 +279,10 @@ class AzureIterationResolver {
     match = iterations.find(iter => 
       iter.name?.toLowerCase().includes(pattern.toLowerCase())
     );
+
+    if (match) {
+      logger.info(`Found fuzzy match: ${pattern} → ${match.name} → ${match.path}`);
+    }
 
     return match ? match.path : null;
   }
@@ -247,6 +315,19 @@ class AzureIterationResolver {
       path,
       timestamp: Date.now()
     });
+  }
+
+  /**
+   * Get supported iteration patterns for a project
+   * @param {string} project - Project name
+   * @returns {Array} Array of supported patterns
+   */
+  getSupportedPatternsForProject(project) {
+    const projectConfig = this.projectPatterns[project];
+    if (projectConfig) {
+      return projectConfig.patterns;
+    }
+    return this.commonPatterns;
   }
 
   /**

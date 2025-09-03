@@ -7,8 +7,20 @@
 // Project enablement configuration - controls which projects are shown in the dashboard
 const PROJECT_CONFIG = {
   // ✅ ENABLED PROJECTS - Only PMP and DaaS as requested
-  'Product - Data as a Service': { enabled: true, priority: 1 },
-  'Product - Partner Management Platform': { enabled: true, priority: 2 },
+  'Product - Data as a Service': { 
+    enabled: true, 
+    priority: 1,
+    iterationPrefix: 'DaaS',
+    iterationPattern: /^DaaS\s+(\d+)$/i,
+    currentIterationFormat: 'DaaS {n}'
+  },
+  'Product - Partner Management Platform': { 
+    enabled: true, 
+    priority: 2,
+    iterationPrefix: 'Delivery',
+    iterationPattern: /^Delivery\s+(\d+)$/i,
+    currentIterationFormat: 'Delivery {n}'
+  },
   'Team - Product Management': { enabled: true, priority: 3 },
   'Team - Engineering': { enabled: true, priority: 4 },
   'Team - QA Testing': { enabled: true, priority: 5 },
@@ -142,6 +154,57 @@ const getEnabledProjects = () => {
 };
 
 /**
+ * Get project iteration configuration
+ * @param {string} projectId - Project identifier
+ * @returns {object|null} Iteration configuration for the project
+ */
+const getProjectIterationConfig = (projectId) => {
+  const config = PROJECT_CONFIG[projectId];
+  if (!config) return null;
+  
+  return {
+    prefix: config.iterationPrefix,
+    pattern: config.iterationPattern,
+    format: config.currentIterationFormat
+  };
+};
+
+/**
+ * Find current iteration for project based on its naming convention
+ * @param {string} projectId - Project identifier
+ * @param {Array} iterations - Available iterations
+ * @returns {string|null} Current iteration name
+ */
+const findCurrentIterationForProject = (projectId, iterations) => {
+  const config = getProjectIterationConfig(projectId);
+  if (!config) {
+    // Fallback: find by date
+    const now = new Date();
+    const currentIteration = iterations.find(iteration => {
+      const startDate = new Date(iteration.attributes?.startDate);
+      const finishDate = new Date(iteration.attributes?.finishDate);
+      return startDate <= now && finishDate >= now;
+    });
+    return currentIteration ? currentIteration.name : null;
+  }
+  
+  // Find iterations matching the project's pattern
+  const matchingIterations = iterations
+    .filter(iter => config.pattern.test(iter.name))
+    .map(iter => {
+      const match = iter.name.match(config.pattern);
+      return {
+        ...iter,
+        iterationNumber: parseInt(match[1])
+      };
+    })
+    .sort((a, b) => b.iterationNumber - a.iterationNumber); // Sort by number descending
+  
+  // Return the highest numbered iteration (most recent)
+  return matchingIterations.length > 0 ? matchingIterations[0].name : null;
+};
+
+/**
  * Get project statistics
  * @returns {object} Statistics about project configuration
  */
@@ -168,5 +231,7 @@ module.exports = {
   isProjectEnabled,
   getProjectConfig,
   getEnabledProjects,
-  getProjectStats
+  getProjectStats,
+  getProjectIterationConfig,
+  findCurrentIterationForProject
 };
