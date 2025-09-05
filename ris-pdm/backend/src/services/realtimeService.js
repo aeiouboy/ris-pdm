@@ -8,10 +8,11 @@ const EventEmitter = require('events');
 const logger = require('../../utils/logger');
 
 class RealtimeService extends EventEmitter {
-  constructor(azureDevOpsService, io) {
+  constructor(azureDevOpsService, io, metricsCalculator = null) {
     super();
     this.azureService = azureDevOpsService;
     this.io = io;
+    this.metricsCalculator = metricsCalculator;
     this.isMonitoring = false;
     this.pollingInterval = null;
     this.previousDataHashes = new Map();
@@ -82,6 +83,15 @@ class RealtimeService extends EventEmitter {
 
     socket.on('unsubscribe-metrics', (data) => {
       this.handleClientUnsubscription(clientId, data);
+    });
+
+    // Handle individual performance subscription
+    socket.on('subscribe-individual', (data) => {
+      this.handleIndividualSubscription(clientId, data);
+    });
+
+    socket.on('unsubscribe-individual', (data) => {
+      this.handleIndividualUnsubscription(clientId, data);
     });
 
     // Handle client disconnect
@@ -161,6 +171,90 @@ class RealtimeService extends EventEmitter {
     }
     
     logger.info(`📊 Client ${clientId} unsubscribed from: ${subscriptionKey}`);
+  }
+
+  /**
+   * Handle individual performance subscription
+   * @param {string} clientId - Client ID
+   * @param {object} data - Subscription data containing userId and optional productId
+   */
+  async handleIndividualSubscription(clientId, data) {
+    const client = this.connectedClients.get(clientId);
+    if (!client) return;
+
+    const { userId, productId = null } = data;
+    if (!userId) {
+      logger.warn(`❌ Individual subscription missing userId for client ${clientId}`);
+      return;
+    }
+
+    const subscriptionKey = `individual-${userId}-${productId || 'all'}`;
+    
+    // Add client to subscription
+    client.subscriptions.add(subscriptionKey);
+    
+    // Create or update subscription
+    if (!this.subscriptions.has(subscriptionKey)) {
+      this.subscriptions.set(subscriptionKey, {
+        type: 'individual',
+        userId,
+        productId,
+        clients: new Set([clientId]),
+        lastUpdate: null,
+        dataHash: null
+      });
+    } else {
+      this.subscriptions.get(subscriptionKey).clients.add(clientId);
+    }
+    
+    logger.info(`👤 Client ${clientId} subscribed to individual metrics for user: ${userId} (project: ${productId || 'all'})`);
+    
+    // Send initial individual metrics data
+    try {
+      const individualData = await this.getIndividualMetrics(userId, { productId });
+      if (individualData) {
+        client.socket.emit('individual-metrics-updated', {
+          userId,
+          productId,
+          metrics: individualData,
+          timestamp: new Date().toISOString(),
+          isInitial: true
+        });
+      }
+    } catch (error) {
+      logger.error(`❌ Error sending initial individual data to client ${clientId}:`, error);
+    }
+  }
+
+  /**
+   * Handle individual performance unsubscription
+   * @param {string} clientId - Client ID
+   * @param {object} data - Unsubscription data containing userId and optional productId
+   */
+  handleIndividualUnsubscription(clientId, data) {
+    const client = this.connectedClients.get(clientId);
+    if (!client) return;
+
+    const { userId, productId = null } = data;
+    if (!userId) return;
+
+    const subscriptionKey = `individual-${userId}-${productId || 'all'}`;
+    
+    client.subscriptions.delete(subscriptionKey);
+    
+    // Remove client from subscription
+    const subscription = this.subscriptions.get(subscriptionKey);
+    if (subscription) {
+      subscription.clients.delete(clientId);
+      
+      // Remove subscription if no clients
+      if (subscription.clients.size === 0) {
+        this.subscriptions.delete(subscriptionKey);
+        logger.info(`🗑️  Removed unused individual subscription: ${subscriptionKey}`);
+      }
+    }
+    
+    logger.info(`👤 Client ${clientId} unsubscribed from individual metrics for user: ${userId}`);
   }
 
   /**
@@ -368,9 +462,15 @@ class RealtimeService extends EventEmitter {
    */
   async getDashboardMetrics() {
     try {
-      // Implement dashboard metrics logic here
-      // This should integrate with your existing metrics calculation
-      const workItems = await this.azureService.getWorkItems();
+      // ✅ FIXED - Use sprint-specific work items instead of all work items
+      // Get work items for the current sprint period (same as main dashboard)
+      const currentSprintWorkItems = this.metricsCalculator ? 
+        await this.metricsCalculator.getWorkItemsForPeriod('sprint') : [];
+      
+      // Fallback to all work items if sprint-specific items not available
+      const workItems = currentSprintWorkItems.length > 0 ? 
+        { workItems: currentSprintWorkItems, totalCount: currentSprintWorkItems.length } :
+        await this.azureService.getWorkItems({ forceRefresh: true });
       
       // Calculate basic metrics
       const totalWorkItems = workItems.totalCount;
@@ -379,6 +479,19 @@ class RealtimeService extends EventEmitter {
       ).length;
       
       const completionRate = totalWorkItems > 0 ? (completedItems / totalWorkItems * 100).toFixed(1) : 0;
+      
+      // Calculate KPIs if metricsCalculator is available
+      let kpis = null;
+      if (this.metricsCalculator) {
+        try {
+          // ✅ FIXED - Pass current sprint info for proper scope
+          const currentSprintInfo = await this.metricsCalculator.getCurrentSprintData();
+          const kpiData = await this.metricsCalculator.calculateKPIs(workItems.workItems, currentSprintInfo);
+          kpis = kpiData;
+        } catch (error) {
+          logger.warn('⚠️ Could not calculate KPIs for real-time data:', error.message);
+        }
+      }
       
       return {
         summary: {
@@ -389,7 +502,8 @@ class RealtimeService extends EventEmitter {
           lastUpdated: new Date().toISOString()
         },
         workItems: workItems.workItems.slice(0, 10), // Latest 10 items
-        totalCount: totalWorkItems
+        totalCount: totalWorkItems,
+        kpis: kpis // Add KPIs to real-time data structure
       };
     } catch (error) {
       logger.error('❌ Error fetching dashboard metrics:', error);
@@ -398,34 +512,75 @@ class RealtimeService extends EventEmitter {
   }
 
   /**
-   * Get individual user metrics
+   * Get enhanced individual user metrics
    * @param {string} userId - User ID or email
-   * @returns {Promise<object>} Individual metrics
+   * @param {object} options - Additional options
+   * @returns {Promise<object>} Enhanced individual metrics
    */
-  async getIndividualMetrics(userId) {
+  async getIndividualMetrics(userId, options = {}) {
     try {
-      const workItems = await this.azureService.getWorkItems({
-        assignedTo: userId
-      });
+      const { productId, period = 'sprint' } = options;
       
+      // Check if we have a metrics calculator service available
+      if (this.metricsCalculator) {
+        // Use enhanced metrics calculator for comprehensive individual data
+        const individualMetrics = await this.metricsCalculator.calculateIndividualMetrics(userId, {
+          period,
+          productId,
+          startDate: options.startDate,
+          endDate: options.endDate
+        });
+        
+        return {
+          ...individualMetrics,
+          realTimeUpdate: true,
+          lastUpdated: new Date().toISOString()
+        };
+      } else {
+        // Fallback to basic work item fetching
+        const workItems = await this.azureService.getUserWorkItems(userId, {
+          productId,
+          forceRefresh: true
+        });
+        
+        return {
+          userId,
+          workItems: {
+            total: workItems.length,
+            completed: workItems.filter(item => 
+              ['Done', 'Closed', 'Resolved'].includes(item.state)
+            ).length,
+            inProgress: workItems.filter(item => 
+              ['Active', 'In Progress'].includes(item.state)
+            ).length,
+            backlog: workItems.filter(item => 
+              ['New', 'Approved'].includes(item.state)
+            ).length
+          },
+          performance: {
+            completedStoryPoints: workItems
+              .filter(item => ['Done', 'Closed'].includes(item.state))
+              .reduce((sum, item) => sum + (item.storyPoints || 0), 0),
+            totalAssignedStoryPoints: workItems
+              .reduce((sum, item) => sum + (item.storyPoints || 0), 0),
+            completionRate: workItems.length > 0 
+              ? (workItems.filter(item => ['Done', 'Closed'].includes(item.state)).length / workItems.length) * 100 
+              : 0,
+            velocity: workItems
+              .filter(item => ['Done', 'Closed'].includes(item.state))
+              .reduce((sum, item) => sum + (item.storyPoints || 0), 0)
+          },
+          realTimeUpdate: true,
+          lastUpdated: new Date().toISOString()
+        };
+      }
+    } catch (error) {
+      logger.error(`❌ Error fetching enhanced individual metrics for ${userId}:`, error);
       return {
         userId,
-        workItems: workItems.workItems,
-        totalCount: workItems.totalCount,
-        summary: {
-          assigned: workItems.totalCount,
-          completed: workItems.workItems.filter(item => 
-            ['Done', 'Closed', 'Resolved'].includes(item.fields?.['System.State'])
-          ).length,
-          inProgress: workItems.workItems.filter(item => 
-            ['Active', 'In Progress'].includes(item.fields?.['System.State'])
-          ).length
-        },
+        error: 'Unable to fetch individual performance data',
         lastUpdated: new Date().toISOString()
       };
-    } catch (error) {
-      logger.error(`❌ Error fetching individual metrics for ${userId}:`, error);
-      return null;
     }
   }
 
@@ -435,7 +590,7 @@ class RealtimeService extends EventEmitter {
    */
   async getWorkItemsMetrics() {
     try {
-      const workItems = await this.azureService.getWorkItems({ maxResults: 50 });
+      const workItems = await this.azureService.getWorkItems({ maxResults: 50, forceRefresh: true });
       
       return {
         workItems: workItems.workItems,

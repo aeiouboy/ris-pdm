@@ -10,9 +10,9 @@ const PROJECT_CONFIG = {
   'Product - Data as a Service': { 
     enabled: true, 
     priority: 1,
-    iterationPrefix: 'DaaS',
-    iterationPattern: /^DaaS\s+(\d+)$/i,
-    currentIterationFormat: 'DaaS {n}'
+    iterationPrefix: 'Delivery',
+    iterationPattern: /^Delivery\s+(\d+)$/i,
+    currentIterationFormat: 'Delivery {n}'
   },
   'Product - Partner Management Platform': { 
     enabled: true, 
@@ -36,7 +36,7 @@ const PROJECT_CONFIG = {
 // Based on actual teams from Azure DevOps screenshot
 const TEAM_MAPPING = {
   // ✅ ENABLED PROJECTS - Using EXACT team names from Azure DevOps
-  'Product - Data as a Service': 'Product - Data as a Service Team', // Will be created if needed
+  'Product - Data as a Service': 'Product - Data as a Service Team', // Map to DaaS own team
   'Product - Partner Management Platform': 'PMP Developer Team', // 🎯 CONFIRMED: Exact team name from screenshot
   'Team - Product Management': 'PMP Developer Team', // Map to PMP Developer Team
   'Team - Engineering': 'PMP Developer Team', // Map to PMP Developer Team  
@@ -51,6 +51,7 @@ const TEAM_MAPPING = {
 
 const PROJECT_MAPPING = {
   // ✅ ENABLED PROJECTS - PMP and DaaS only
+  // DaaS maps to its own Azure DevOps project (Product - Data as a Service)
   'Product - Data as a Service': 'Product - Data as a Service',
   'Product - Partner Management Platform': 'Product - Partner Management Platform',
   'Team - Product Management': 'Product - Partner Management Platform',
@@ -197,11 +198,44 @@ const findCurrentIterationForProject = (projectId, iterations) => {
         ...iter,
         iterationNumber: parseInt(match[1])
       };
-    })
-    .sort((a, b) => b.iterationNumber - a.iterationNumber); // Sort by number descending
+    });
   
-  // Return the highest numbered iteration (most recent)
-  return matchingIterations.length > 0 ? matchingIterations[0].name : null;
+  // First try: find current iteration by date (active sprint)
+  const now = new Date();
+  const currentByDate = matchingIterations.find(iteration => {
+    const startDate = new Date(iteration.attributes?.startDate);
+    const finishDate = new Date(iteration.attributes?.finishDate);
+    // ✅ FIXED - Use finishDate > now to prioritize "ending today" over "starting today"
+    return startDate <= now && finishDate > now;
+  });
+  
+  if (currentByDate) {
+    return currentByDate.name;
+  }
+  
+  // Fallback: find iteration ending today, or most recently completed iteration (not future)
+  const endingTodayIterations = matchingIterations
+    .filter(iteration => {
+      const finishDate = new Date(iteration.attributes?.finishDate);
+      const today = new Date();
+      today.setHours(23, 59, 59, 999); // End of today
+      return finishDate.toDateString() === today.toDateString(); // Ending today
+    })
+    .sort((a, b) => b.iterationNumber - a.iterationNumber);
+  
+  if (endingTodayIterations.length > 0) {
+    return endingTodayIterations[0].name;
+  }
+  
+  // Final fallback: most recently completed iteration
+  const completedIterations = matchingIterations
+    .filter(iteration => {
+      const finishDate = new Date(iteration.attributes?.finishDate);
+      return finishDate < now; // Only past/completed iterations
+    })
+    .sort((a, b) => b.iterationNumber - a.iterationNumber);
+  
+  return completedIterations.length > 0 ? completedIterations[0].name : null;
 };
 
 /**
