@@ -165,11 +165,12 @@ KPICard.displayName = 'KPICard';
 export const PLCard = React.memo(({ value, trend, trendValue, loading }) => (
   <KPICard
     title="P/L YTD"
-    value={value}
+    value={value >= 1000000 ? value / 1000000 : value}
     trend={trend}
     trendValue={trendValue}
-    format="currency"
-    prefix="$"
+    format="decimal"
+    prefix="฿"
+    suffix={value >= 1000000 ? 'M' : ''}
     icon="💰"
     color="green"
     loading={loading}
