@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 
-const SprintFilter = ({ selectedSprint, onSprintChange, sprints = [], className = '' }) => {
+const SprintFilter = ({ selectedSprint, onSprintChange, selectedProject, sprints = [], className = '' }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [apiSprints, setApiSprints] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -35,8 +35,9 @@ const SprintFilter = ({ selectedSprint, onSprintChange, sprints = [], className 
       setError(null);
 
       try {
-        console.log('🔄 Fetching sprints from API...');
+        console.log('🔄 Fetching sprints from API...', selectedProject ? `for project: ${selectedProject}` : '');
         const response = await axios.get('/api/metrics/sprints', {
+          params: selectedProject ? { productId: selectedProject } : {},
           timeout: 8000, // Reduced from 10 seconds to 8 seconds
           headers: {
             'Content-Type': 'application/json'
@@ -60,7 +61,15 @@ const SprintFilter = ({ selectedSprint, onSprintChange, sprints = [], className 
     };
 
     fetchSprints();
-  }, [sprints]);
+  }, [sprints, selectedProject]);
+
+  // Reset fetched flag when project changes to force re-fetch
+  useEffect(() => {
+    if (selectedProject) {
+      hasFetchedRef.current = false;
+      setApiSprints([]); // Clear existing sprints
+    }
+  }, [selectedProject]);
 
   // Use API sprints if available, otherwise use provided sprints or fallback
   const sprintList = apiSprints.length > 0 ? apiSprints : (sprints.length > 0 ? sprints : fallbackSprints);
@@ -127,7 +136,7 @@ const SprintFilter = ({ selectedSprint, onSprintChange, sprints = [], className 
         type="button"
         onClick={() => setIsOpen(!isOpen)}
         disabled={loading}
-        className={`w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-left shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 hover:bg-gray-50 transition-colors ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+        className={`w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-left shadow-sm focus:outline-none focus-visible:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 hover:bg-gray-50 transition-colors ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
         aria-haspopup="listbox"
         aria-expanded={isOpen}
       >
@@ -167,7 +176,7 @@ const SprintFilter = ({ selectedSprint, onSprintChange, sprints = [], className 
       </button>
 
       {isOpen && (
-        <div className="absolute z-50 mt-1 w-full bg-white border border-gray-300 rounded-md shadow-lg">
+        <div className="absolute z-[9999] mt-1 w-full bg-white border border-gray-300 rounded-md shadow-lg max-h-96 overflow-y-auto">
           <ul className="max-h-60 overflow-auto py-1" role="listbox">
             {sprintList.map((sprint) => (
               <li

@@ -21,12 +21,19 @@ const Dashboard = () => {
   
   // Sprint data for resolving sprint paths
   const [sprintData, setSprintData] = useState([]);
+  // Force refresh trigger timestamp; when set, API calls add noCache
+  const [forceTs, setForceTs] = useState(0);
   
-  // Fetch sprint data for path resolution
+  // Fetch sprint data for path resolution (scoped to selected product)
   useEffect(() => {
     const fetchSprintData = async () => {
       try {
-        const response = await axios.get('/api/metrics/sprints', {
+        const params = new URLSearchParams({
+          ...(selectedProduct && { productId: normalizeProjectId(selectedProduct) }),
+          ...(forceTs ? { noCache: 'true', _: String(forceTs) } : {})
+        });
+
+        const response = await axios.get(`/api/metrics/sprints?${params.toString()}`, {
           headers: {
             'Authorization': `Bearer ${localStorage.getItem('authToken') || 'mock-token'}`,
             'Content-Type': 'application/json'
@@ -39,29 +46,90 @@ const Dashboard = () => {
         console.warn('Could not fetch sprint data for path resolution:', error);
       }
     };
-    
+
     fetchSprintData();
-  }, []);
+  }, [selectedProduct, forceTs]);
   
   // Helper function to resolve sprint ID to iteration path
   const getSprintIterationPath = (sprintId) => {
     if (!sprintId || sprintId === 'all-sprints') return null;
     
-    // Find sprint from mock data
+    // Find sprint from API data
     const sprint = sprintData.find(s => s.id === sprintId);
     if (sprint?.path) {
+      // For DaaS, convert full path to simple format
+      if (selectedProduct === 'Product - Data as a Service' && sprint.path.includes('\\')) {
+        const pathParts = sprint.path.split('\\');
+        const iterationName = pathParts[pathParts.length - 1]; // Get last part
+        console.log(`📊 DaaS: Converting full path "${sprint.path}" → simple format "${iterationName}"`);
+        return iterationName;
+      }
       console.log(`📊 Resolved sprint ${sprintId} → ${sprint.path}`);
       return sprint.path;
     }
     
-    // Fallback for 'current' when no sprint data loaded yet
-    if (sprintId === 'current') {
-      console.log(`📊 Fallback path for current sprint → Project\\Sprint 25`);
-      return 'Project\\Sprint 25'; 
-    }
+    // Construct iteration path based on project and sprint
+    // For DaaS: Use simple format extracted from sprint API data
+    // For PMP: Use full path format
+    const constructIterationPath = (projectName, sprintName) => {
+      if (projectName === 'Product - Data as a Service') {
+        // DaaS uses simple "Delivery" format (not full path due to team resolution issues)
+        
+        // First, try to find the sprint in our sprint data
+        const sprint = sprintData.find(s => s.id === sprintName);
+        if (sprint) {
+          // For DaaS, convert full path to simple format
+          // "Product - Data as a Service\Delivery 12" → "Delivery 12"
+          if (sprint.path && sprint.path.includes('\\')) {
+            const pathParts = sprint.path.split('\\');
+            const iterationName = pathParts[pathParts.length - 1]; // Get last part
+            console.log(`📊 DaaS: Converting full path "${sprint.path}" → simple format "${iterationName}"`);
+            return iterationName;
+          }
+          // If no backslash, use the name directly
+          return sprint.name;
+        }
+        
+        // Handle common sprint name patterns
+        if (sprintName === 'current') {
+          // Find current sprint by date from sprint data
+          const now = new Date();
+          const currentSprint = sprintData.find(s => {
+            if (s.id === 'current' || (s.startDate && s.endDate)) {
+              if (s.id === 'current') return true;
+              const startDate = new Date(s.startDate);
+              const endDate = new Date(s.endDate);
+              return startDate <= now && now <= endDate;
+            }
+            return false;
+          });
+          
+          if (currentSprint) {
+            console.log(`📊 DaaS: Found current sprint "${currentSprint.name}"`);
+            return currentSprint.name;
+          }
+          // If unknown, allow backend to resolve 'current'
+          return 'current';
+        }
+        
+        // Handle delivery-X format
+        if (sprintName.startsWith('delivery-')) return `Delivery ${sprintName.replace('delivery-', '')}`;
+        if (sprintName.startsWith('Delivery ')) return sprintName; // Already in correct format
+        return sprintName; // Use as-is for DaaS
+        
+      } else if (projectName === 'Product - Partner Management Platform') {
+        // PMP: prefer backend resolution for 'current'; otherwise full path
+        if (sprintName === 'current') return 'current';
+        if (sprintName.startsWith('delivery-')) return `${projectName}\\Delivery ${sprintName.replace('delivery-', '')}`;
+        return `${projectName}\\${sprintName}`;
+      }
+      // Default fallback
+      return `${projectName}\\${sprintName}`;
+    };
     
-    console.log(`📊 No path found for sprint: ${sprintId}`);
-    return null;
+    const iterationPath = constructIterationPath(selectedProduct, sprintId);
+    console.log(`📊 Constructed iteration path: ${selectedProduct} + ${sprintId} → ${iterationPath}`);
+    return iterationPath;
   };
   
   // Swipe navigation for mobile
@@ -124,7 +192,7 @@ const Dashboard = () => {
         setFallbackLoading(true);
         setFallbackError(null);
         
-        const response = await axios.get('/api/metrics/overview', {
+        const response = await axios.get(`/api/metrics/overview${forceTs ? `?noCache=true&_=${forceTs}` : ''}`, {
           timeout: 10000, // 10 second timeout
           headers: {
             'Authorization': `Bearer ${localStorage.getItem('authToken') || 'mock-token'}`,
@@ -165,7 +233,7 @@ const Dashboard = () => {
     }, 3000); // 3 second timeout
 
     return () => clearTimeout(timeoutId);
-  }, [realtimeData, realtimeLoading, fallbackData, fallbackLoading]);
+  }, [realtimeData, realtimeLoading, fallbackData, fallbackLoading, forceTs]);
 
   // Helper function to normalize project ID for API calls
   const normalizeProjectId = (projectId) => {
@@ -187,6 +255,7 @@ const Dashboard = () => {
           ...(normalizedProductId !== 'all-projects' && { productId: normalizedProductId }),
           ...(selectedSprint !== 'all-sprints' && { sprintId: selectedSprint })
         });
+        if (forceTs) { params.set('noCache', 'true'); params.set('_', String(forceTs)); }
         
         const response = await axios.get(`/api/metrics/kpis?${params}`, {
           headers: {
@@ -205,7 +274,7 @@ const Dashboard = () => {
     };
 
     fetchKPIData();
-  }, [selectedProduct, selectedSprint, startDate, endDate]);
+  }, [selectedProduct, selectedSprint, startDate, endDate, forceTs]);
 
   // Fetch Burndown data
   useEffect(() => {
@@ -217,6 +286,7 @@ const Dashboard = () => {
           ...(normalizedProductId !== 'all-projects' && { productId: normalizedProductId }),
           ...(selectedSprint !== 'all-sprints' && { sprintId: selectedSprint })
         });
+        if (forceTs) { params.set('noCache', 'true'); params.set('_', String(forceTs)); }
         
         const response = await axios.get(`/api/metrics/burndown?${params}`, {
           headers: {
@@ -235,7 +305,7 @@ const Dashboard = () => {
     };
 
     fetchBurndownData();
-  }, [selectedProduct, selectedSprint]);
+  }, [selectedProduct, selectedSprint, forceTs]);
 
   // Fetch Velocity Trend data
   useEffect(() => {
@@ -243,11 +313,14 @@ const Dashboard = () => {
       setComponentLoading(prev => ({ ...prev, velocity: true }));
       try {
         const normalizedProductId = normalizeProjectId(selectedProduct);
+        // DaaS-specific range: show latest 4 sprints (Delivery 9-12), PMP shows 6
+        const range = normalizedProductId === 'Product - Data as a Service' ? '4' : '6';
         const params = new URLSearchParams({
           period: 'sprint',
-          range: '6',
+          range,
           ...(normalizedProductId !== 'all-projects' && { productId: normalizedProductId })
         });
+        if (forceTs) { params.set('noCache', 'true'); params.set('_', String(forceTs)); }
         
         const response = await axios.get(`/api/metrics/velocity-trend?${params}`, {
           headers: {
@@ -266,7 +339,7 @@ const Dashboard = () => {
     };
 
     fetchVelocityTrend();
-  }, [selectedProduct]);
+  }, [selectedProduct, forceTs]);
 
 
   if (loading) {
@@ -300,6 +373,21 @@ const Dashboard = () => {
             <div className="flex items-center space-x-3 mb-2">
               <h1 className="text-3xl font-bold text-gray-900">RIS Performance Dashboard</h1>
               <RealtimeStatus showDetails={true} showControls={true} />
+              <button 
+                onClick={async () => {
+                  const ts = Date.now();
+                  setForceTs(ts);
+                  try {
+                    await refresh({ noCache: true });
+                  } finally {
+                    setTimeout(() => setForceTs(0), 2000);
+                  }
+                }}
+                className="px-3 py-1.5 text-xs font-medium text-white bg-indigo-600 rounded-md hover:bg-indigo-700"
+                title="Fetch fresh data now (bypass caches)"
+              >
+                Force Refresh
+              </button>
             </div>
             <p className="text-gray-600">Overview of team and individual performance metrics</p>
             {updateCount > 0 && (
@@ -342,6 +430,7 @@ const Dashboard = () => {
           <SprintFilter 
             selectedSprint={selectedSprint}
             onSprintChange={setSelectedSprint}
+            selectedProject={selectedProduct}
           />
           <DateRangePicker 
             startDate={startDate}
@@ -487,6 +576,13 @@ const Dashboard = () => {
         iterationPath={getSprintIterationPath(selectedSprint)}
         className="mb-6"
       />
+
+      {/* Debug panel (development only): show effective filters sent to widgets */}
+      {import.meta.env.DEV && (
+        <div className="mt-4 text-xs text-gray-500">
+          <div>Debug Filters → productId: {normalizeProjectId(selectedProduct)} | sprintId: {selectedSprint} | iterationPath: {getSprintIterationPath(selectedSprint) || 'all'}</div>
+        </div>
+      )}
     </div>
   );
 };

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LabelList } from 'recharts';
 
 const ENVIRONMENT_COLORS = {
   Deploy: '#10B981', // Green
@@ -23,6 +23,7 @@ const BugClassificationWidget = ({
   const [selectedEnvironment, setSelectedEnvironment] = useState(environment);
   const [showPatterns, setShowPatterns] = useState(false);
   const [patternsData, setPatternsData] = useState(null);
+  const [viewMode, setViewMode] = useState('bar'); // 'bar' | 'pie'
 
   useEffect(() => {
     if (productId) {
@@ -117,6 +118,23 @@ const BugClassificationWidget = ({
         <div className="flex justify-between items-center mb-4">
           <h3 className="text-lg font-semibold text-gray-800">Bug Classification Analysis</h3>
           <div className="flex items-center space-x-3">
+            {/* View toggle to avoid redundant charts */}
+            <div className="hidden md:flex text-xs rounded border border-gray-300 overflow-hidden">
+              <button
+                onClick={() => setViewMode('bar')}
+                className={`px-3 py-1 ${viewMode === 'bar' ? 'bg-gray-100 text-gray-900' : 'bg-white text-gray-600'}`}
+                title="Bar view"
+              >
+                Bar
+              </button>
+              <button
+                onClick={() => setViewMode('pie')}
+                className={`px-3 py-1 ${viewMode === 'pie' ? 'bg-gray-100 text-gray-900' : 'bg-white text-gray-600'}`}
+                title="Pie view"
+              >
+                Pie
+              </button>
+            </div>
             <select
               value={selectedEnvironment || ''}
               onChange={(e) => setSelectedEnvironment(e.target.value || null)}
@@ -168,13 +186,34 @@ const BugClassificationWidget = ({
           </div>
         )}
 
-        {/* Environment Distribution */}
+        {/* Environment Visualization (single chart to avoid redundancy) */}
         {environmentData.length > 0 && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-            {/* Pie Chart */}
-            <div className="bg-gray-50 p-4 rounded-lg">
-              <h4 className="text-md font-medium text-gray-800 mb-4">Environment Distribution</h4>
-              <ResponsiveContainer width="100%" height={250}>
+          <div className="mb-6 bg-gray-50 p-4 rounded-lg">
+            <h4 className="text-md font-medium text-gray-800 mb-4">
+              {viewMode === 'bar' ? 'Bugs by Environment (with % labels)' : 'Environment Distribution'}
+            </h4>
+            {viewMode === 'bar' ? (
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart data={environmentData} margin={{ left: 8, right: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="name" />
+                  <YAxis allowDecimals={false} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                    {environmentData.map((entry, index) => (
+                      <Cell key={`bar-cell-${index}`} fill={entry.color} />
+                    ))}
+                    <LabelList dataKey="count" position="top" formatter={(v, e) => {
+                      if (!e || e.index === undefined || !environmentData[e.index]) {
+                        return `${v}`;
+                      }
+                      return `${v} (${environmentData[e.index].percentage}%)`;
+                    }} />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <ResponsiveContainer width="100%" height={260}>
                 <PieChart>
                   <Pie
                     data={environmentData}
@@ -182,7 +221,7 @@ const BugClassificationWidget = ({
                     cy="50%"
                     labelLine={false}
                     label={({ name, percentage }) => percentage > 5 ? `${name}: ${percentage}%` : ''}
-                    outerRadius={80}
+                    outerRadius={90}
                     fill="#8884d8"
                     dataKey="count"
                   >
@@ -193,25 +232,7 @@ const BugClassificationWidget = ({
                   <Tooltip content={<CustomTooltip />} />
                 </PieChart>
               </ResponsiveContainer>
-            </div>
-
-            {/* Bar Chart */}
-            <div className="bg-gray-50 p-4 rounded-lg">
-              <h4 className="text-md font-medium text-gray-800 mb-4">Bug Count by Environment</h4>
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart data={environmentData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="name" />
-                  <YAxis />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-                    {environmentData.map((entry, index) => (
-                      <Cell key={`bar-cell-${index}`} fill={entry.color} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+            )}
           </div>
         )}
 

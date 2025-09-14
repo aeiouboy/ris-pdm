@@ -51,6 +51,7 @@ class AzureDevOpsService {
     
     // Enhanced caching with Redis support
     this.cacheService = cacheService;
+    this.cache = new Map(); // In-memory cache for quick access
     this.cacheTTL = {
       workItems: 300,      // 5 minutes (seconds)
       workItemDetails: 900, // 15 minutes (seconds)
@@ -228,6 +229,9 @@ class AzureDevOpsService {
    * @returns {object|null} Cached data or null
    */
   async getFromCache(namespace, identifier, params = {}) {
+    if (!this.cacheService) {
+      return null;
+    }
     const key = this.cacheService.generateKey(namespace, identifier, params);
     return await this.cacheService.get(key);
   }
@@ -241,6 +245,9 @@ class AzureDevOpsService {
    * @param {number} ttl - Time to live in seconds
    */
   async setCache(namespace, identifier, params = {}, data, ttl) {
+    if (!this.cacheService) {
+      return;
+    }
     const key = this.cacheService.generateKey(namespace, identifier, params);
     return await this.cacheService.set(key, data, { ttl });
   }
@@ -289,11 +296,16 @@ class AzureDevOpsService {
     // Create cache key with resolved iteration path for accurate caching
     const resolvedQueryOptions = { ...queryOptions, iterationPath: resolvedIterationPath };
 
-    // Check enhanced cache
-    const cached = await this.getFromCache('workItems', 'query', resolvedQueryOptions);
-    if (cached) {
-      logger.debug('Returning cached work items');
-      return cached;
+    // Check enhanced cache unless forced refresh requested
+    const { forceRefresh = false } = queryOptions;
+    if (!forceRefresh) {
+      const cached = await this.getFromCache('workItems', 'query', resolvedQueryOptions);
+      if (cached) {
+        logger.debug('Returning cached work items');
+        return cached;
+      }
+    } else {
+      logger.debug('Bypassing cache for work items due to forceRefresh');
     }
 
     try {
@@ -347,7 +359,7 @@ class AzureDevOpsService {
         returnedCount: workItems.length
       };
 
-      // Cache the result
+      // Cache the result (even on force refresh we update cache with fresh data)
       await this.setCache('workItems', 'query', resolvedQueryOptions, result, this.cacheTTL.workItems);
       return result;
       
@@ -356,8 +368,16 @@ class AzureDevOpsService {
       if (error.message.includes('TF51011') && error.message.includes('iteration path does not exist') && resolvedIterationPath) {
         logger.warn(`Iteration path not found: ${resolvedIterationPath} (original: ${iterationPath}). Using fallback query without iteration filter.`);
         
-        // Special case: For current sprint (Delivery 4), return mock sprint data instead of all project data
-        if (resolvedIterationPath.includes('Delivery 4') || resolvedIterationPath.includes('Sprint 25') || iterationPath === 'current') {
+        // Special case: For current sprint patterns, return mock sprint data instead of all project data
+        const isCurrentSprint = (
+          resolvedIterationPath?.includes('Delivery') || 
+          resolvedIterationPath?.includes('Sprint') || 
+          iterationPath === 'current' ||
+          iterationPath?.includes('Delivery') ||
+          iterationPath?.includes('Sprint')
+        );
+        
+        if (isCurrentSprint) {
           logger.info(`Iteration path is current sprint (${resolvedIterationPath || iterationPath}), returning mock sprint data instead of all project data`);
           return this.generateMockCurrentSprintData();
         }
@@ -507,7 +527,7 @@ class AzureDevOpsService {
    * @param {string} timeframe - Time frame for iterations ('current', 'past', 'future', or 'all')
    * @returns {Promise<object>} Iterations data
    */
-  async getIterations(teamName = null, timeframe = 'current') {
+  async getIterations(teamName = null, timeframe = 'current', projectName = null) {
     if (this.isDisabled) {
       return { iterations: [], count: 0, team: teamName, timeframe, disabled: true };
     }
@@ -532,15 +552,16 @@ class AzureDevOpsService {
       }
 
       try {
-        logger.info(`🔍 Azure DevOps API: project="${this.project}", team="${team}"`);
+        const targetProject = projectName || this.project;
+        logger.info(`🔍 Azure DevOps API: project="${targetProject}", team="${team}"`);
         
         let endpoint;
         if (timeframe === 'current') {
-          endpoint = `/${encodeURIComponent(this.project)}/${encodeURIComponent(team)}/_apis/work/teamsettings/iterations?$timeframe=current&api-version=${this.apiVersion}`;
+          endpoint = `/${encodeURIComponent(targetProject)}/${encodeURIComponent(team)}/_apis/work/teamsettings/iterations?$timeframe=current&api-version=${this.apiVersion}`;
         } else if (timeframe === 'all') {
-          endpoint = `/${encodeURIComponent(this.project)}/${encodeURIComponent(team)}/_apis/work/teamsettings/iterations?api-version=${this.apiVersion}`;
+          endpoint = `/${encodeURIComponent(targetProject)}/${encodeURIComponent(team)}/_apis/work/teamsettings/iterations?api-version=${this.apiVersion}`;
         } else {
-          endpoint = `/${encodeURIComponent(this.project)}/${encodeURIComponent(team)}/_apis/work/teamsettings/iterations?$timeframe=${timeframe}&api-version=${this.apiVersion}`;
+          endpoint = `/${encodeURIComponent(targetProject)}/${encodeURIComponent(team)}/_apis/work/teamsettings/iterations?$timeframe=${timeframe}&api-version=${this.apiVersion}`;
         }
         
         logger.info(`🔍 Azure DevOps endpoint: ${endpoint}`);
@@ -782,7 +803,37 @@ class AzureDevOpsService {
       assigneeEmail: fields['System.AssignedTo']?.uniqueName,
       assigneeImageUrl: fields['System.AssignedTo']?.imageUrl,
       state: fields['System.State'],
-      storyPoints: fields['Microsoft.VSTS.Scheduling.StoryPoints'] || 0,
+      // Story points with robust fallbacks (standard, aliases, Effort/Estimate)
+      storyPoints: (() => {
+        // 1) Standard field
+        let sp = fields['Microsoft.VSTS.Scheduling.StoryPoints'];
+
+        // 2) Custom aliases (e.g., "Story Point", "Story Points", or *.StoryPoints endings)
+        if (sp === undefined || sp === null || sp === 0) {
+          const keys = Object.keys(fields);
+          const lower = (s) => s.toLowerCase().trim();
+          const exactLabel = keys.find(k => ['story point', 'story points'].includes(lower(k)));
+          const dotNotation = keys.find(k => /(^|\.)story ?points?$/i.test(k));
+          const anyLabel = keys.find(k => /story ?points?/i.test(k));
+          const aliasKey = exactLabel || dotNotation || anyLabel;
+          if (aliasKey) {
+            sp = fields[aliasKey];
+          }
+        }
+
+        // 3) Effort/Estimate fallbacks
+        const effort = fields['Microsoft.VSTS.Scheduling.Effort'] ?? fields['Effort'];
+        const originalEstimate = fields['Microsoft.VSTS.Scheduling.OriginalEstimate'];
+        let value = sp;
+        if (value === undefined || value === null || value === 0) {
+          if (effort !== undefined && effort !== null) {
+            value = effort; // Agile process uses Effort as story points equivalent
+          } else if (originalEstimate !== undefined && originalEstimate !== null) {
+            value = originalEstimate; // Fallback to estimate units if present
+          }
+        }
+        return Number(value) || 0;
+      })(),
       priority: fields['Microsoft.VSTS.Common.Priority'] || 4,
       createdDate: fields['System.CreatedDate'],
       changedDate: fields['System.ChangedDate'],
@@ -1399,7 +1450,7 @@ class AzureDevOpsService {
       // Instead, we move them to "Removed" state
       const endpoint = `/${encodeURIComponent(project)}/_apis/wit/workitems/${workItemId}?api-version=${this.apiVersion}`;
       
-      const response = await this.makeRequest(endpoint, {
+      await this.makeRequest(endpoint, {
         method: 'DELETE'
       });
 
@@ -1742,13 +1793,6 @@ class AzureDevOpsService {
    */
   async getWorkItemsWithClassification(queryOptions = {}) {
     const {
-      workItemTypes = ['Task', 'Bug', 'User Story', 'Feature'],
-      states = null,
-      iterationPath = null,
-      areaPath = null,
-      assignedTo = null,
-      customQuery = null,
-      maxResults = 1000,
       projectName = null,
       includeBugClassification = true
     } = queryOptions;
@@ -2234,6 +2278,329 @@ class AzureDevOpsService {
           error: fallbackError.message
         };
       }
+    }
+  }
+
+  /**
+   * Get work items assigned to a specific user
+   * @param {string} userId - The Azure DevOps user ID or email
+   * @param {object} options - Query options
+   * @param {string} options.startDate - Start date for filtering
+   * @param {string} options.endDate - End date for filtering
+   * @param {string} options.productId - Optional project filter
+   * @param {Array<string>} options.workItemTypes - Work item types to include
+   * @returns {Promise<Array>} User's work items
+   */
+  async getUserWorkItems(userId, options = {}) {
+    const cacheKey = `user-workitems-${userId}-${JSON.stringify(options)}`;
+    const cached = this.cache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) {
+      return cached.data;
+    }
+
+    try {
+      const { startDate, endDate, productId, workItemTypes = ['User Story', 'Task', 'Bug', 'Feature'] } = options;
+      
+      // Build WIQL query for user's work items
+      let wiql = `SELECT [System.Id], [System.Title], [System.State], [System.WorkItemType], [System.AssignedTo], [Microsoft.VSTS.Scheduling.StoryPoints], [Microsoft.VSTS.Scheduling.RemainingWork], [Microsoft.VSTS.Scheduling.CompletedWork], [System.CreatedDate], [System.ChangedDate], [Microsoft.VSTS.Common.ClosedDate], [System.IterationPath], [System.AreaPath] FROM WorkItems WHERE [System.AssignedTo] = '${userId}'`;
+      
+      // Add work item type filter
+      if (workItemTypes.length > 0) {
+        const typeFilter = workItemTypes.map(type => `'${type}'`).join(', ');
+        wiql += ` AND [System.WorkItemType] IN (${typeFilter})`;
+      }
+      
+      // Add date filters
+      if (startDate) {
+        wiql += ` AND [System.CreatedDate] >= '${startDate}'`;
+      }
+      if (endDate) {
+        wiql += ` AND [System.CreatedDate] <= '${endDate}'`;
+      }
+      
+      wiql += ' ORDER BY [System.ChangedDate] DESC';
+
+      // If productId specified, query specific project, otherwise query all accessible projects
+      const projects = productId && productId !== 'all-projects' ? [productId] : await this.getAccessibleProjects();
+      
+      let allWorkItems = [];
+      
+      for (const project of projects) {
+        try {
+          const projectName = typeof project === 'string' ? project : project.name;
+          const response = await this.makeRequest(`${this.baseUrl}/${encodeURIComponent(projectName)}/_apis/wit/wiql?api-version=${this.apiVersion}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ query: wiql })
+          });
+
+          if (response.workItems && response.workItems.length > 0) {
+            // Get work item details in batches
+            const workItemIds = response.workItems.map(wi => wi.id);
+            const batchSize = 200;
+            
+            for (let i = 0; i < workItemIds.length; i += batchSize) {
+              const batch = workItemIds.slice(i, i + batchSize);
+              const ids = batch.join(',');
+              
+              const detailsResponse = await this.makeRequest(
+                `${this.baseUrl}/${encodeURIComponent(projectName)}/_apis/wit/workitems?ids=${ids}&api-version=${this.apiVersion}&$expand=all`
+              );
+              
+              if (detailsResponse.value) {
+                const transformedItems = detailsResponse.value.map(item => 
+                  this.transformWorkItem(item, projectName)
+                );
+                allWorkItems.push(...transformedItems);
+              }
+            }
+          }
+        } catch (error) {
+          logger.warn(`Failed to fetch user work items from project ${project}:`, error.message);
+        }
+      }
+
+      // Sort by most recent changes first
+      allWorkItems.sort((a, b) => new Date(b.changedDate) - new Date(a.changedDate));
+      
+      // Cache the results
+      this.cache.set(cacheKey, {
+        data: allWorkItems,
+        timestamp: Date.now()
+      });
+      
+      logger.info(`Retrieved ${allWorkItems.length} work items for user ${userId}`);
+      return allWorkItems;
+      
+    } catch (error) {
+      logger.error('Error fetching user work items:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get user capacity data for a specific sprint
+   * @param {string} userId - The Azure DevOps user ID
+   * @param {string} sprintPath - The iteration path
+   * @param {string} projectName - The project name
+   * @returns {Promise<object>} User capacity information
+   */
+  async getUserCapacityData(userId, sprintPath, projectName) {
+    const cacheKey = `user-capacity-${userId}-${sprintPath}-${projectName}`;
+    const cached = this.cache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < 10 * 60 * 1000) {
+      return cached.data;
+    }
+
+    try {
+      // Get team context for the project
+      const teamsResponse = await this.makeRequest(
+        `${this.baseUrl}/${encodeURIComponent(projectName)}/_apis/projects/${encodeURIComponent(projectName)}/teams?api-version=${this.apiVersion}`
+      );
+
+      if (!teamsResponse.value || teamsResponse.value.length === 0) {
+        throw new Error(`No teams found for project ${projectName}`);
+      }
+
+      // Use the first team (or find the appropriate team)
+      const team = teamsResponse.value[0];
+      
+      // Get iteration info
+      const iterationsResponse = await this.makeRequest(
+        `${this.baseUrl}/${encodeURIComponent(projectName)}/${encodeURIComponent(team.name)}/_apis/work/teamsettings/iterations?api-version=${this.apiVersion}`
+      );
+
+      const currentIteration = iterationsResponse.value.find(iter => 
+        iter.path === sprintPath || iter.name === sprintPath
+      );
+
+      if (!currentIteration) {
+        throw new Error(`Sprint ${sprintPath} not found`);
+      }
+
+      // Get team capacity for the iteration
+      const capacityResponse = await this.makeRequest(
+        `${this.baseUrl}/${encodeURIComponent(projectName)}/${encodeURIComponent(team.name)}/_apis/work/teamsettings/iterations/${currentIteration.id}/capacities?api-version=${this.apiVersion}`
+      );
+
+      // Find user's capacity
+      const userCapacity = capacityResponse.value.find(cap => 
+        cap.teamMember.id === userId || cap.teamMember.uniqueName === userId || cap.teamMember.displayName === userId
+      );
+
+      const capacityData = {
+        userId,
+        sprintPath,
+        projectName,
+        teamName: team.name,
+        iterationId: currentIteration.id,
+        iterationName: currentIteration.name,
+        startDate: currentIteration.attributes?.startDate,
+        endDate: currentIteration.attributes?.finishDate,
+        capacity: userCapacity ? {
+          capacityPerDay: userCapacity.activities.reduce((total, activity) => total + activity.capacityPerDay, 0),
+          daysOff: userCapacity.daysOff || [],
+          activities: userCapacity.activities || []
+        } : null,
+        teamMember: userCapacity?.teamMember || null
+      };
+      
+      // Cache the results
+      this.cache.set(cacheKey, {
+        data: capacityData,
+        timestamp: Date.now()
+      });
+      
+      return capacityData;
+      
+    } catch (error) {
+      logger.error('Error fetching user capacity data:', error);
+      // Return basic capacity data structure on error
+      return {
+        userId,
+        sprintPath,
+        projectName,
+        capacity: null,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Get user performance history over multiple sprints/time periods
+   * @param {string} userId - The Azure DevOps user ID
+   * @param {object} options - Query options
+   * @param {string} options.timeRange - Time range ('3months', '6months', '1year')
+   * @param {string} options.productId - Optional project filter
+   * @returns {Promise<Array>} Historical performance data
+   */
+  async getUserPerformanceHistory(userId, options = {}) {
+    const { timeRange = '6months', productId } = options;
+    const cacheKey = `user-history-${userId}-${timeRange}-${productId || 'all'}`;
+    const cached = this.cache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < 15 * 60 * 1000) {
+      return cached.data;
+    }
+
+    try {
+      // Calculate date range
+      const endDate = new Date();
+      const startDate = new Date();
+      
+      switch (timeRange) {
+        case '3months':
+          startDate.setMonth(startDate.getMonth() - 3);
+          break;
+        case '6months':
+          startDate.setMonth(startDate.getMonth() - 6);
+          break;
+        case '1year':
+          startDate.setFullYear(startDate.getFullYear() - 1);
+          break;
+        default:
+          startDate.setMonth(startDate.getMonth() - 6);
+      }
+
+      // Get work items for the time period
+      const workItems = await this.getUserWorkItems(userId, {
+        startDate: startDate.toISOString().split('T')[0],
+        endDate: endDate.toISOString().split('T')[0],
+        productId
+      });
+
+      // Group by sprint/iteration
+      const groupedData = {};
+      workItems.forEach(item => {
+        const iterationPath = item.iterationPath || 'No Sprint';
+        if (!groupedData[iterationPath]) {
+          groupedData[iterationPath] = {
+            iterationPath,
+            workItems: [],
+            storyPoints: 0,
+            completedStoryPoints: 0,
+            totalItems: 0,
+            completedItems: 0,
+            bugs: 0,
+            resolvedBugs: 0
+          };
+        }
+        
+        groupedData[iterationPath].workItems.push(item);
+        groupedData[iterationPath].totalItems++;
+        
+        if (item.storyPoints) {
+          groupedData[iterationPath].storyPoints += item.storyPoints;
+        }
+        
+        if (item.state === 'Done' || item.state === 'Closed') {
+          groupedData[iterationPath].completedItems++;
+          if (item.storyPoints) {
+            groupedData[iterationPath].completedStoryPoints += item.storyPoints;
+          }
+        }
+        
+        if (item.workItemType === 'Bug') {
+          groupedData[iterationPath].bugs++;
+          if (item.state === 'Done' || item.state === 'Closed') {
+            groupedData[iterationPath].resolvedBugs++;
+          }
+        }
+      });
+
+      // Convert to array and calculate metrics
+      const historyData = Object.values(groupedData).map(period => ({
+        ...period,
+        completionRate: period.totalItems > 0 ? (period.completedItems / period.totalItems) * 100 : 0,
+        velocity: period.completedStoryPoints,
+        bugResolutionRate: period.bugs > 0 ? (period.resolvedBugs / period.bugs) * 100 : 100
+      }));
+
+      // Sort by iteration path (most recent first)
+      historyData.sort((a, b) => b.iterationPath.localeCompare(a.iterationPath));
+      
+      // Cache the results
+      this.cache.set(cacheKey, {
+        data: historyData,
+        timestamp: Date.now()
+      });
+      
+      logger.info(`Retrieved ${historyData.length} historical periods for user ${userId}`);
+      return historyData;
+      
+    } catch (error) {
+      logger.error('Error fetching user performance history:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get accessible projects for the current user/PAT
+   * @returns {Promise<Array>} List of accessible projects
+   */
+  async getAccessibleProjects() {
+    const cacheKey = 'accessible-projects';
+    const cached = this.cache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < 30 * 60 * 1000) {
+      return cached.data;
+    }
+
+    try {
+      const response = await this.makeRequest(`${this.baseUrl}/_apis/projects?api-version=${this.apiVersion}`);
+      const projects = response.value || [];
+      
+      // Cache for 30 minutes
+      this.cache.set(cacheKey, {
+        data: projects,
+        timestamp: Date.now()
+      });
+      
+      return projects;
+      
+    } catch (error) {
+      logger.error('Error fetching accessible projects:', error);
+      return [];
     }
   }
 

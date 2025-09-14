@@ -19,13 +19,15 @@ class WebSocketService {
     
     // Configuration
     this.config = {
-      serverUrl: 'http://localhost:3001',
+      // Use current origin so Vite proxy routes `/socket.io` to backend (3002)
+      serverUrl: (typeof window !== 'undefined' && window.location?.origin) || 'http://localhost:3002',
       autoConnect: true,
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       timeout: 10000,
-      forceNew: false
+      forceNew: false,
+      path: '/socket.io'
     };
   }
 
@@ -49,7 +51,8 @@ class WebSocketService {
         reconnectionDelay: this.config.reconnectionDelay,
         reconnectionDelayMax: this.config.reconnectionDelayMax,
         timeout: this.config.timeout,
-        forceNew: this.config.forceNew
+        forceNew: this.config.forceNew,
+        path: this.config.path
       });
 
       // Set up event handlers
@@ -271,6 +274,77 @@ class WebSocketService {
     }
     
     console.log(`📊 Unsubscribed from metrics: ${subscriptionId}`);
+  }
+
+  /**
+   * Subscribe to individual performance metrics
+   * @param {string} userId - User ID for individual performance
+   * @param {object} options - Additional options
+   * @param {string} options.productId - Optional product/project filter
+   * @param {function} callback - Callback function for updates
+   * @returns {string|null} Subscription ID
+   */
+  subscribeToIndividualPerformance(userId, callback, options = {}) {
+    if (!callback || typeof callback !== 'function') {
+      console.error('👤 Invalid callback provided for individual performance subscription');
+      return null;
+    }
+
+    if (!userId) {
+      console.error('👤 User ID is required for individual performance subscription');
+      return null;
+    }
+
+    const { productId = null } = options;
+    const subscriptionKey = `individual-${userId}-${productId || 'all'}`;
+    
+    // Store callback
+    this.subscriptions.set(subscriptionKey, callback);
+    
+    // Send subscription request to server if connected
+    if (this.socket && this.isConnected) {
+      this.socket.emit('subscribe-individual', {
+        userId,
+        productId
+      });
+      
+      // Also listen for individual-specific events
+      this.socket.on('individual-metrics-updated', callback);
+      this.socket.on('individual-workitem-changed', callback);
+    }
+    
+    console.log(`👤 Subscribed to individual performance: ${userId} (project: ${productId || 'all'})`);
+    return subscriptionKey;
+  }
+
+  /**
+   * Unsubscribe from individual performance metrics
+   * @param {string} userId - User ID
+   * @param {object} options - Additional options
+   * @param {string} options.productId - Optional product/project filter
+   */
+  unsubscribeFromIndividualPerformance(userId, options = {}) {
+    if (!userId) return;
+
+    const { productId = null } = options;
+    const subscriptionKey = `individual-${userId}-${productId || 'all'}`;
+    
+    // Remove callback
+    this.subscriptions.delete(subscriptionKey);
+    
+    // Send unsubscription request to server if connected
+    if (this.socket && this.isConnected) {
+      this.socket.emit('unsubscribe-individual', {
+        userId,
+        productId
+      });
+      
+      // Remove individual-specific event listeners
+      this.socket.off('individual-metrics-updated');
+      this.socket.off('individual-workitem-changed');
+    }
+    
+    console.log(`👤 Unsubscribed from individual performance: ${userId}`);
   }
 
   /**

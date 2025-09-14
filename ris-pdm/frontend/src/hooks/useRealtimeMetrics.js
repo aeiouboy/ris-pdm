@@ -147,7 +147,8 @@ export const useRealtimeMetrics = (metricsType = 'all', options = {}) => {
   /**
    * Fetch data using regular API as fallback
    */
-  const fetchFallbackData = useCallback(async () => {
+  const fetchFallbackData = useCallback(async (opts = {}) => {
+    const { noCache = false } = opts;
     let apiEndpoint;
     
     switch (metricsType) {
@@ -165,7 +166,12 @@ export const useRealtimeMetrics = (metricsType = 'all', options = {}) => {
         apiEndpoint = '/api/metrics/overview';
     }
 
-    const response = await fetch(`${import.meta.env.VITE_API_URL || ''}${apiEndpoint}`, {
+    const url = new URL(`${import.meta.env.VITE_API_BASE_URL || ''}${apiEndpoint}`, window.location.origin);
+    if (noCache) {
+      url.searchParams.set('noCache', 'true');
+      url.searchParams.set('_', Date.now().toString());
+    }
+    const response = await fetch(url.toString(), {
       headers: {
         'Content-Type': 'application/json'
       }
@@ -182,12 +188,13 @@ export const useRealtimeMetrics = (metricsType = 'all', options = {}) => {
   /**
    * Manual refresh function
    */
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (opts = {}) => {
+    const { noCache = false } = opts;
     setLoading(true);
     setError(null);
     
     try {
-      if (connected && isSubscribedRef.current) {
+      if (connected && isSubscribedRef.current && !noCache) {
         // Request server to send latest data
         // This is handled by the subscription, so we just wait
         setTimeout(() => {
@@ -197,7 +204,7 @@ export const useRealtimeMetrics = (metricsType = 'all', options = {}) => {
         }, 2000);
       } else {
         // Use fallback API
-        const freshData = await fetchFallbackData();
+        const freshData = await fetchFallbackData({ noCache });
         if (freshData) {
           setData(freshData);
           setLastUpdate(new Date());

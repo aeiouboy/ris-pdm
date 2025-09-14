@@ -117,28 +117,45 @@ class ProjectResolutionService {
       return projectInfo.name;
     }
 
-    // Check if project is enabled in our mapping
-    if (!isProjectEnabled(projectIdentifier)) {
-      // If not in mapping but looks like a project name, return as-is
-      // This handles cases where the project name is passed directly
-      logger.warn(`Project ${projectIdentifier} is not in mapping, returning as-is`);
-      return projectIdentifier;
-    }
-
-    try {
-      // Map frontend project to Azure DevOps project name
-      const azureProjectName = mapFrontendProjectToAzure(projectIdentifier);
-      if (!azureProjectName) {
-        // If no mapping found, return the original identifier as project name
-        logger.warn(`No Azure DevOps mapping found for project: ${projectIdentifier}, using as-is`);
-        return projectIdentifier;
+    // First try exact match
+    if (isProjectEnabled(projectIdentifier)) {
+      try {
+        const azureProjectName = mapFrontendProjectToAzure(projectIdentifier);
+        if (azureProjectName) {
+          return azureProjectName;
+        }
+      } catch (error) {
+        logger.warn(`Failed to resolve project name for ${projectIdentifier}:`, error.message);
       }
-
-      return azureProjectName;
-    } catch (error) {
-      logger.warn(`Failed to resolve project name for ${projectIdentifier}, using as-is:`, error.message);
-      return projectIdentifier;
     }
+
+    // Try case-insensitive and format-insensitive matching for common variations
+    const { getFrontendProjects } = require('../config/projectMapping');
+    const frontendProjects = getFrontendProjects();
+    
+    // Normalize the input identifier for comparison
+    const normalizedInput = projectIdentifier.toLowerCase().replace(/[^a-z0-9]/g, '');
+    
+    for (const frontendProjectId of frontendProjects) {
+      const normalizedProject = frontendProjectId.toLowerCase().replace(/[^a-z0-9]/g, '');
+      
+      if (normalizedProject === normalizedInput) {
+        logger.info(`✅ Resolved project variation "${projectIdentifier}" → "${frontendProjectId}"`);
+        try {
+          const azureProjectName = mapFrontendProjectToAzure(frontendProjectId);
+          if (azureProjectName) {
+            return azureProjectName;
+          }
+        } catch (error) {
+          logger.warn(`Failed to resolve mapped project ${frontendProjectId}:`, error.message);
+        }
+        break;
+      }
+    }
+
+    // If still no mapping found, warn and return as-is
+    logger.warn(`Project ${projectIdentifier} is not in mapping, returning as-is`);
+    return projectIdentifier;
   }
 
   /**

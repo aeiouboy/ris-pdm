@@ -4,12 +4,13 @@ const router = express.Router();
 const logger = require('../utils/logger');
 const NodeCache = require('node-cache');
 const AzureDevOpsService = require('../src/services/azureDevOpsService');
+const cacheService = require('../src/services/cacheService');
 const MetricsCalculatorService = require('../src/services/metricsCalculator');
 const BugClassificationService = require('../src/services/bugClassificationService');
 const TaskDistributionService = require('../src/services/taskDistributionService');
 const ProjectResolutionService = require('../src/services/projectResolutionService');
 const { azureDevOpsConfig } = require('../src/config/azureDevOpsConfig');
-const { mapFrontendProjectToTeam } = require('../src/config/projectMapping');
+const { mapFrontendProjectToTeam, mapFrontendProjectToAzure } = require('../src/config/projectMapping');
 
 // Cache for metrics data (TTL: 5 minutes)
 const metricsCache = new NodeCache({ stdTTL: 300 });
@@ -40,7 +41,7 @@ router.get('/overview',
     query('startDate').optional().isISO8601().withMessage('Invalid start date format'),
     query('endDate').optional().isISO8601().withMessage('Invalid end date format'),
   ],
-  async (req, res, next) => {
+  async (req, res) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
@@ -52,14 +53,22 @@ router.get('/overview',
         });
       }
 
-      const { period = 'sprint', startDate, endDate } = req.query;
+      const { period = 'sprint', startDate, endDate, noCache } = req.query;
       const cacheKey = `overview-${period}-${startDate}-${endDate}-${req.user.id}`;
 
-      // Check cache first
-      const cachedData = metricsCache.get(cacheKey);
-      if (cachedData) {
-        logger.info(`Returning cached overview metrics for user ${req.user.email}`);
-        return res.json(cachedData);
+      // Optional cache bypass
+      if (noCache === 'true') {
+        metricsCache.del(cacheKey);
+        // Clear internal caches that affect overview
+        await cacheService.clearPattern('ris:cache:workItems:*');
+        await cacheService.clearPattern('ris:cache:metrics:*');
+      } else {
+        // Check cache first
+        const cachedData = metricsCache.get(cacheKey);
+        if (cachedData) {
+          logger.info(`Returning cached overview metrics for user ${req.user.email}`);
+          return res.json(cachedData);
+        }
       }
 
       logger.info(`Fetching overview metrics for user ${req.user?.email || 'anonymous'}`, {
@@ -143,7 +152,7 @@ router.get('/products/:productId',
     query('period').optional().isIn(['sprint', 'month', 'quarter', 'year']).withMessage('Invalid period'),
     query('sprintId').optional().notEmpty().withMessage('Sprint ID cannot be empty'),
   ],
-  async (req, res, next) => {
+  async (req, res) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
@@ -211,7 +220,7 @@ router.get('/teams/:teamId',
     param('teamId').notEmpty().withMessage('Team ID is required'),
     query('period').optional().isIn(['sprint', 'month', 'quarter']).withMessage('Invalid period'),
   ],
-  async (req, res, next) => {
+  async (req, res) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
@@ -484,7 +493,7 @@ router.get('/team-members',
       });
     }
 
-    const { productId, sprintId } = req.query;
+    const { productId, sprintId, noCache } = req.query;
     
     logger.info('Fetching team members list', {
       productId,
@@ -495,9 +504,15 @@ router.get('/team-members',
     const cacheKey = `team-members-list-${productId || 'all'}-${sprintId || 'all'}`;
     console.log(`🔧 Team members cache key: ${cacheKey}`);
     
+    // Optional cache bypass and internal cache clear
+    if (noCache === 'true') {
+      metricsCache.del(cacheKey);
+      await cacheService.clearPattern('ris:cache:teamMembers:*');
+    }
+
     // Check cache first
     const cachedData = metricsCache.get(cacheKey);
-    if (cachedData) {
+    if (cachedData && noCache !== 'true') {
       logger.info('Returning cached team members list');
       return res.json(cachedData);
     }
@@ -563,14 +578,20 @@ router.get('/kpis',
         });
       }
 
-      const { period = 'sprint', productId, sprintId } = req.query;
+      const { period = 'sprint', productId, sprintId, noCache } = req.query;
       const cacheKey = `kpis-${period}-${productId}-${sprintId}`;
 
-      // Check cache first
-      const cachedData = metricsCache.get(cacheKey);
-      if (cachedData) {
-        logger.info('Returning cached KPI data');
-        return res.json(cachedData);
+      // Optional cache bypass
+      if (noCache === 'true') {
+        metricsCache.del(cacheKey);
+        await cacheService.clearPattern('ris:cache:workItems:*');
+        await cacheService.clearPattern('ris:cache:metrics:*');
+      } else {
+        const cachedData = metricsCache.get(cacheKey);
+        if (cachedData) {
+          logger.info('Returning cached KPI data');
+          return res.json(cachedData);
+        }
       }
 
       logger.info('Fetching detailed KPI data', {
@@ -642,14 +663,19 @@ router.get('/burndown',
         });
       }
 
-      const { sprintId, productId } = req.query;
+      const { sprintId, productId, noCache } = req.query;
       const cacheKey = `burndown-${sprintId}-${productId}`;
 
-      // Check cache first
-      const cachedData = metricsCache.get(cacheKey);
-      if (cachedData) {
-        logger.info('Returning cached burndown data');
-        return res.json(cachedData);
+      if (noCache === 'true') {
+        metricsCache.del(cacheKey);
+        await cacheService.clearPattern('ris:cache:iterations:*');
+        await cacheService.clearPattern('ris:cache:workItems:*');
+      } else {
+        const cachedData = metricsCache.get(cacheKey);
+        if (cachedData) {
+          logger.info('Returning cached burndown data');
+          return res.json(cachedData);
+        }
       }
 
       logger.info('Fetching sprint burndown data', {
@@ -719,14 +745,19 @@ router.get('/velocity-trend',
         });
       }
 
-      const { period = 'sprint', range = 6, productId } = req.query;
+      const { period = 'sprint', range = 6, productId, noCache } = req.query;
       const cacheKey = `velocity-trend-${period}-${range}-${productId}`;
 
-      // Check cache first
-      const cachedData = metricsCache.get(cacheKey);
-      if (cachedData) {
-        logger.info('Returning cached velocity trend data');
-        return res.json(cachedData);
+      if (noCache === 'true') {
+        metricsCache.del(cacheKey);
+        await cacheService.clearPattern('ris:cache:workItems:*');
+        await cacheService.clearPattern('ris:cache:trends:*');
+      } else {
+        const cachedData = metricsCache.get(cacheKey);
+        if (cachedData) {
+          logger.info('Returning cached velocity trend data');
+          return res.json(cachedData);
+        }
       }
 
       logger.info('Fetching velocity trend data', {
@@ -799,14 +830,18 @@ router.get('/task-distribution',
         });
       }
 
-      const { period = 'sprint', sprintId, productId } = req.query;
+      const { period = 'sprint', sprintId, productId, noCache } = req.query;
       const cacheKey = `task-distribution-${period}-${sprintId}-${productId}`;
 
-      // Check cache first
-      const cachedData = metricsCache.get(cacheKey);
-      if (cachedData) {
-        logger.info('Returning cached task distribution data');
-        return res.json(cachedData);
+      if (noCache === 'true') {
+        metricsCache.del(cacheKey);
+        await cacheService.clearPattern('ris:cache:workItems:*');
+      } else {
+        const cachedData = metricsCache.get(cacheKey);
+        if (cachedData) {
+          logger.info('Returning cached task distribution data');
+          return res.json(cachedData);
+        }
       }
 
       logger.info('Fetching task distribution data', {
@@ -861,7 +896,7 @@ router.get('/task-distribution',
  * @desc    Check Azure DevOps service health
  * @access  Private
  */
-router.get('/health', async (req, res, next) => {
+router.get('/health', async (req, res) => {
   try {
     logger.info('Checking Azure DevOps service health');
     
@@ -939,7 +974,7 @@ router.get('/bugs/classification',
     query('states').optional().isString().withMessage('States must be a string'),
     query('assignedTo').optional().isString().withMessage('Assigned to must be a string'),
   ],
-  async (req, res, next) => {
+  async (req, res) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
@@ -1020,7 +1055,7 @@ router.get('/bugs/stats',
     query('productId').optional().notEmpty().withMessage('Product ID cannot be empty'),
     query('sprintId').optional().notEmpty().withMessage('Sprint ID cannot be empty'),
   ],
-  async (req, res, next) => {
+  async (req, res) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
@@ -1096,7 +1131,7 @@ router.get('/bugs/types',
     query('sprintId').optional().notEmpty().withMessage('Sprint ID cannot be empty'),
     query('states').optional().isString().withMessage('States must be a string'),
   ],
-  async (req, res, next) => {
+  async (req, res) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
@@ -2020,19 +2055,25 @@ router.get('/sprints',
         });
       }
 
-      const { productId, teamName } = req.query;
+      const { productId, teamName, noCache } = req.query;
       const cacheKey = `sprints-${productId || 'all'}-${teamName || 'all'}`;
 
-      // Check cache first
-      const cachedData = metricsCache.get(cacheKey);
-      if (cachedData) {
-        logger.debug(`Returning cached sprint data for key: ${cacheKey}`);
-        return res.json({
-          success: true,
-          data: cachedData,
-          cached: true,
-          timestamp: new Date().toISOString()
-        });
+      // Optional cache bypass
+      if (noCache === 'true') {
+        metricsCache.del(cacheKey);
+        await cacheService.clearPattern('ris:cache:iterations:*');
+      } else {
+        // Check cache first
+        const cachedData = metricsCache.get(cacheKey);
+        if (cachedData) {
+          logger.debug(`Returning cached sprint data for key: ${cacheKey}`);
+          return res.json({
+            success: true,
+            data: cachedData,
+            cached: true,
+            timestamp: new Date().toISOString()
+          });
+        }
       }
 
       logger.info('Fetching sprints from Azure DevOps', {
@@ -2043,67 +2084,136 @@ router.get('/sprints',
       // Get project from productId or use default
       let project = productId || 'Product - Partner Management Platform';
       
-      // Use project resolution service if available
-      if (projectResolver && typeof projectResolver.resolveProject === 'function') {
-        try {
-          const resolvedProject = await projectResolver.resolveProject(productId);
-          if (resolvedProject) {
-            project = resolvedProject;
+      // Resolve to Azure DevOps project name when possible
+      try {
+        if (productId) {
+          const resolvedName = await projectResolver.resolveProjectName(productId);
+          if (resolvedName) {
+            project = resolvedName;
           }
-        } catch (error) {
-          logger.warn('Failed to resolve project using projectResolver:', error.message);
         }
+      } catch (error) {
+        logger.warn('Failed to resolve Azure project name, falling back to mapping:', error.message);
+        const mapped = productId ? mapFrontendProjectToAzure(productId) : null;
+        if (mapped) project = mapped;
       }
 
-      // Generate mock sprint data function
-      const generateMockSprints = () => [
-        {
-          id: 'current',
-          name: 'Delivery 4',
-          description: 'Current Active Sprint (Aug 25 - Sep 5)',
-          status: 'active',
-          startDate: '2025-08-25', // Matches screenshot
-          endDate: '2025-09-05',   // Matches screenshot  
-          path: 'Product\\Delivery 4'
-        },
-        {
-          id: 'delivery-3',
-          name: 'Delivery 3',
-          description: 'Previous Sprint',
-          status: 'completed',
-          startDate: new Date(Date.now() - 28 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // -28 days
-          endDate: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // -14 days
-          path: 'Product\\Delivery 3'
-        },
-        {
-          id: 'delivery-2',
-          name: 'Delivery 2',
-          description: 'Previous Sprint',
-          status: 'completed',
-          startDate: new Date(Date.now() - 42 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // -42 days
-          endDate: new Date(Date.now() - 28 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // -28 days
-          path: 'Product\\Delivery 2'
-        },
-        {
-          id: 'all-sprints',
-          name: 'All Sprints',
-          description: 'All time view',
-          status: 'all',
-          startDate: null,
-          endDate: null,
-          path: null
+      // Generate project-specific mock sprint data function
+      const generateMockSprints = (projectId) => {
+        logger.info(`Generating sprints for project: ${projectId}`);
+        
+        if (projectId === 'Product - Data as a Service' || projectId === 'daas') {
+          return [
+            {
+              id: 'current',
+              name: 'Delivery 12',
+              description: 'Current Active Sprint (Aug 25 - Sep 5)',
+              status: 'active',
+              startDate: '2025-08-25',
+              endDate: '2025-09-05',
+              path: 'Product - Data as a Service\\Delivery 12'
+            },
+            {
+              id: 'delivery-11',
+              name: 'Delivery 11', 
+              description: 'Previous Sprint',
+              status: 'completed',
+              startDate: new Date(Date.now() - 28 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+              endDate: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+              path: 'Product - Data as a Service\\Delivery 11'
+            },
+            {
+              id: 'delivery-10',
+              name: 'Delivery 10',
+              description: 'Previous Sprint',
+              status: 'completed', 
+              startDate: new Date(Date.now() - 42 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+              endDate: new Date(Date.now() - 28 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+              path: 'Product - Data as a Service\\Delivery 10'
+            },
+            {
+              id: 'all-sprints',
+              name: 'All Sprints',
+              description: 'All time view',
+              status: 'all',
+              startDate: null,
+              endDate: null,
+              path: null
+            }
+          ];
+        } else if (projectId === 'Product - Partner Management Platform' || projectId === 'pmp') {
+          return [
+            {
+              id: 'current',
+              name: 'Delivery 4',
+              description: 'Current Active Sprint (Aug 25 - Sep 5)',
+              status: 'active',
+              startDate: '2025-08-25',
+              endDate: '2025-09-05',  
+              path: 'Product\\Delivery 4'
+            },
+            {
+              id: 'delivery-3',
+              name: 'Delivery 3',
+              description: 'Previous Sprint',
+              status: 'completed',
+              startDate: new Date(Date.now() - 28 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+              endDate: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+              path: 'Product\\Delivery 3'
+            },
+            {
+              id: 'delivery-2', 
+              name: 'Delivery 2',
+              description: 'Previous Sprint',
+              status: 'completed',
+              startDate: new Date(Date.now() - 42 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+              endDate: new Date(Date.now() - 28 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+              path: 'Product\\Delivery 2'
+            },
+            {
+              id: 'all-sprints',
+              name: 'All Sprints',
+              description: 'All time view',
+              status: 'all',
+              startDate: null,
+              endDate: null,
+              path: null
+            }
+          ];
+        } else {
+          // Generic fallback for other projects
+          return [
+            {
+              id: 'current',
+              name: 'Current Sprint',
+              description: 'Current Active Sprint',
+              status: 'active',
+              startDate: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+              endDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+              path: 'Current Sprint'
+            },
+            {
+              id: 'all-sprints',
+              name: 'All Sprints',
+              description: 'All time view',
+              status: 'all',
+              startDate: null,
+              endDate: null,
+              path: null
+            }
+          ];
         }
-      ];
+      };
 
       // Get iterations from Azure DevOps with timeout
       let iterations;
       try {
         // 🎯 FIXED: Ensure we always pass a team name (required for getIterations)
-        const resolvedTeamName = teamName || mapFrontendProjectToTeam(project) || 'PMP Developer Team';
+        const resolvedTeamName = teamName || mapFrontendProjectToTeam(productId || project) || 'PMP Developer Team';
         logger.info(`Using team name: ${resolvedTeamName}`);
         
         // Set a shorter timeout for the iterations call to avoid frontend timeouts
-        const iterationPromise = azureService.getIterations(resolvedTeamName, 'all'); // Get all iterations, not just current
+        const iterationPromise = azureService.getIterations(resolvedTeamName, 'all', project); // Get all iterations, not just current
         const timeoutPromise = new Promise((_, reject) => 
           setTimeout(() => reject(new Error('Azure DevOps timeout')), 5000)
         );
@@ -2113,7 +2223,7 @@ router.get('/sprints',
         logger.warn('Failed to fetch iterations from Azure DevOps, using mock data:', error.message);
         
         // Return mock sprint data immediately when Azure DevOps fails
-        const mockSprints = generateMockSprints();
+        const mockSprints = generateMockSprints(project);
         logger.info('Returning mock sprint data due to Azure DevOps error');
         return res.json({
           success: true,
@@ -2128,7 +2238,7 @@ router.get('/sprints',
         logger.warn('No iterations found', { project, teamName });
         
         // Return mock sprint data as fallback
-        const mockSprints = generateMockSprints();
+        const mockSprints = generateMockSprints(project);
         logger.info('Returning mock sprint data due to no iterations found');
         
         return res.json({

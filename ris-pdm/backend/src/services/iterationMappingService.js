@@ -21,12 +21,12 @@ class IterationMappingService {
     // Project-specific iteration mapping rules
     this.projectRules = {
       'Product - Data as a Service': {
-        currentFormat: 'DaaS {n}',
+        currentFormat: 'Delivery {n}',
         patterns: [
-          /^DaaS\s+(\d+)$/i,
-          /^daas[-_\s]*(\d+)$/i
+          /^Delivery\s+(\d+)$/i,
+          /^delivery[-_\s]*(\d+)$/i
         ],
-        examples: ['DaaS 12', 'daas-12', 'daas_12']
+        examples: ['Delivery 12', 'delivery-12', 'delivery_12']
       },
       'Product - Partner Management Platform': {
         currentFormat: 'Delivery {n}',

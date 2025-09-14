@@ -35,7 +35,7 @@ const ProductSelector = ({ selectedProduct, onProductChange, products = [], clas
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-left shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 hover:bg-gray-50 transition-colors"
+        className="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-left shadow-sm focus:outline-none focus-visible:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 hover:bg-gray-50 transition-colors"
         aria-haspopup="listbox"
         aria-expanded={isOpen}
       >
@@ -83,7 +83,7 @@ const ProductSelector = ({ selectedProduct, onProductChange, products = [], clas
       </button>
 
       {isOpen && (
-        <div className="absolute z-50 mt-1 w-full bg-white border border-gray-300 rounded-md shadow-lg">
+        <div className="absolute z-[9999] mt-1 w-full bg-white border border-gray-300 rounded-md shadow-lg max-h-96 overflow-y-auto">
           <ul className="max-h-60 overflow-auto py-1" role="listbox">
             {productList.map((product) => (
               <li

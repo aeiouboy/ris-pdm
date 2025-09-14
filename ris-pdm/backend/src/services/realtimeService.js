@@ -484,9 +484,8 @@ class RealtimeService extends EventEmitter {
       let kpis = null;
       if (this.metricsCalculator) {
         try {
-          // ✅ FIXED - Pass current sprint info for proper scope
-          const currentSprintInfo = await this.metricsCalculator.getCurrentSprintData();
-          const kpiData = await this.metricsCalculator.calculateKPIs(workItems.workItems, currentSprintInfo);
+          // ✅ FIXED - Remove broken getCurrentSprintData call, KPIs work with work items directly
+          const kpiData = await this.metricsCalculator.calculateKPIs(workItems.workItems, null);
           kpis = kpiData;
         } catch (error) {
           logger.warn('⚠️ Could not calculate KPIs for real-time data:', error.message);

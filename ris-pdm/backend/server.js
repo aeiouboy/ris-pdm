@@ -32,6 +32,7 @@ const { router: authRoutes, initializeOAuthService } = require('./src/routes/aut
 const AzureDevOpsService = require('./src/services/azureDevOpsService');
 const RealtimeService = require('./src/services/realtimeService');
 const ProjectResolutionService = require('./src/services/projectResolutionService');
+const MetricsCalculatorService = require('./src/services/metricsCalculator');
 
 const app = express();
 const server = createServer(app);
@@ -127,7 +128,10 @@ const initializeServices = async () => {
   }
 };
 
-const realtimeService = new RealtimeService(azureDevOpsService, io);
+// Initialize services
+const projectResolver = new ProjectResolutionService();
+const metricsCalculator = new MetricsCalculatorService(azureDevOpsService);
+const realtimeService = new RealtimeService(azureDevOpsService, io, metricsCalculator);
 
 // Global error handlers
 process.on('uncaughtException', (error) => {

@@ -11,7 +11,7 @@
 const logger = require('../../utils/logger').child({ component: 'AzureIterationResolver' });
 const { 
   mapFrontendProjectToTeam, 
-  getProjectIterationConfig, 
+  mapFrontendProjectToAzure,
   findCurrentIterationForProject 
 } = require('../config/projectMapping');
 // Using built-in fetch from Node.js 18+
@@ -41,14 +41,33 @@ class AzureIterationResolver {
     // Project-specific iteration patterns
     this.projectPatterns = {
       'Product - Data as a Service': {
-        patterns: ['DaaS {n}'],
-        regex: /^DaaS\s+(\d+)$/i
+        patterns: ['Delivery {n}', 'Sprint {n}', 'DaaS {n}'],
+        // Allow optional suffixes like "Delivery 12 – DaaS" by matching the start only
+        regex: /^(Delivery|Sprint|DaaS)\s+(\d+)(\b|\s|\W|$)/i
       },
       'Product - Partner Management Platform': {
         patterns: ['Delivery {n}', 'Sprint {n}'],
-        regex: /^(Delivery|Sprint)\s+(\d+)$/i
+        // Allow optional suffixes after the number
+        regex: /^(Delivery|Sprint)\s+(\d+)(\b|\s|\W|$)/i
       }
     };
+  }
+
+  /**
+   * Build candidate Azure DevOps team names for a project
+   * @param {string} project - Frontend or Azure project name
+   * @param {string|null} preferredTeam - Preferred team mapping
+   * @returns {string[]} Candidate team names
+   */
+  getCandidateTeamNames(project, preferredTeam) {
+    const azureProject = mapFrontendProjectToAzure(project) || project;
+    const candidates = [];
+    if (preferredTeam) candidates.push(preferredTeam);
+    // Common Azure DevOps default team naming conventions
+    candidates.push(`${azureProject} Team`);
+    candidates.push(azureProject);
+    // De-duplicate while preserving order
+    return Array.from(new Set(candidates.filter(Boolean)));
   }
 
   /**
@@ -119,41 +138,90 @@ class AzureIterationResolver {
    */
   async getProjectIterations(project, teamName = null) {
     try {
-      // 🎯 FIXED: Use proper team mapping instead of guessing patterns
-      const correctTeamName = teamName || mapFrontendProjectToTeam(project) || project;
-      
-      // Debug logging to see what teams we're trying
-      logger.info(`🔍 Project: "${project}" → Mapped Team: "${mapFrontendProjectToTeam(project)}" → Final Team: "${correctTeamName}"`);
-      
-      // 🎯 FIXED: Call Azure DevOps API directly to avoid recursion
-      // Instead of calling azureService.getIterations (which creates recursion), call the API directly
+      const azureProject = mapFrontendProjectToAzure(project) || project;
+      const preferredTeam = teamName || mapFrontendProjectToTeam(project) || project;
+      const candidates = this.getCandidateTeamNames(project, preferredTeam);
       const org = this.azureService.organization;
       const pat = this.azureService.pat;
       const apiVersion = this.azureService.apiVersion;
-      
-      const url = `https://dev.azure.com/${org}/${encodeURIComponent(project)}/${encodeURIComponent(correctTeamName)}/_apis/work/teamsettings/iterations?api-version=${apiVersion}`;
-      
-      logger.debug(`Calling Azure DevOps API directly: ${url}`);
-      
       const auth = Buffer.from(':' + pat).toString('base64');
-      const response = await fetch(url, {
-        headers: {
-          'Authorization': 'Basic ' + auth,
-          'Content-Type': 'application/json'
+
+      logger.info(`🔍 Frontend Project: "${project}" → Azure Project: "${azureProject}" → Team candidates: ${JSON.stringify(candidates)}`);
+
+      // Try team iterations endpoint with multiple candidates
+      for (const candidate of candidates) {
+        try {
+          const url = `https://dev.azure.com/${org}/${encodeURIComponent(azureProject)}/${encodeURIComponent(candidate)}/_apis/work/teamsettings/iterations?api-version=${apiVersion}`;
+          logger.debug(`Attempting iterations API for team '${candidate}': ${url}`);
+          const response = await fetch(url, {
+            headers: {
+              'Authorization': 'Basic ' + auth,
+              'Content-Type': 'application/json'
+            }
+          });
+
+          if (!response.ok) {
+            const txt = await response.text();
+            logger.debug(`Iterations API failed for team '${candidate}': ${response.status} - ${txt}`);
+            continue;
+          }
+
+          const data = await response.json();
+          const iterations = data.value || [];
+          if (iterations.length > 0) {
+            logger.info(`✅ Found ${iterations.length} iterations using team '${candidate}'`);
+            return iterations;
+          }
+        } catch (teamErr) {
+          logger.debug(`Team '${candidate}' lookup error: ${teamErr.message}`);
+          continue;
         }
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        logger.debug(`Azure DevOps API failed for team '${correctTeamName}': ${response.status} - ${errorText}`);
+      }
+
+      // Fallback: classification nodes (project-level iterations tree)
+      try {
+        const url = `https://dev.azure.com/${org}/${encodeURIComponent(azureProject)}/_apis/wit/classificationnodes/iterations?$depth=10&api-version=${apiVersion}`;
+        logger.debug(`Falling back to classification nodes iterations: ${url}`);
+        const response = await fetch(url, {
+          headers: {
+            'Authorization': 'Basic ' + auth,
+            'Content-Type': 'application/json'
+          }
+        });
+
+        if (!response.ok) {
+          const txt = await response.text();
+          logger.debug(`Classification nodes API failed: ${response.status} - ${txt}`);
+          return [];
+        }
+
+        const data = await response.json();
+        const flattened = [];
+
+        const flatten = (node, parents = []) => {
+          if (!node) return;
+          const names = [...parents, node.name].filter(Boolean);
+          const path = `${azureProject}\\${names.join('\\')}`;
+          flattened.push({
+            id: node.id,
+            name: node.name,
+            path,
+            attributes: node.attributes || {}
+          });
+          if (Array.isArray(node.children)) {
+            node.children.forEach(child => flatten(child, names));
+          }
+        };
+
+        flatten(data, []);
+        if (flattened.length > 0) {
+          logger.info(`✅ Found ${flattened.length} iterations from classification nodes tree`);
+        }
+        return flattened;
+      } catch (nodeErr) {
+        logger.error(`Classification nodes fallback failed: ${nodeErr.message}`);
         return [];
       }
-      
-      const data = await response.json();
-      logger.info(`✅ Found ${data.count} iterations for team: ${correctTeamName}`);
-      
-      return data.value || [];
-
     } catch (error) {
       logger.error(`Error getting project iterations: ${error.message}`);
       return [];
@@ -228,7 +296,7 @@ class AzureIterationResolver {
    * @returns {string|null} Matching iteration path
    */
   async findIterationByPattern(iterations, pattern, project = null) {
-    // Direct name match first
+    // Direct name match first (case-insensitive)
     let match = iterations.find(iter => 
       iter.name?.toLowerCase() === pattern.toLowerCase()
     );
@@ -248,10 +316,12 @@ class AzureIterationResolver {
         const projectConfig = this.projectPatterns[project];
         for (const template of projectConfig.patterns) {
           const testName = template.replace('{n}', number).replace('{n:02d}', number.toString().padStart(2, '0'));
-          
-          match = iterations.find(iter => 
-            iter.name?.toLowerCase() === testName.toLowerCase()
-          );
+          const testLower = testName.toLowerCase();
+          // Allow names that start with the pattern (e.g., "Delivery 12 – DaaS")
+          match = iterations.find(iter => {
+            const nameLower = (iter.name || '').toLowerCase();
+            return nameLower === testLower || nameLower.startsWith(testLower);
+          });
           
           if (match) {
             logger.info(`Found project-specific pattern match: ${pattern} → ${testName} → ${match.path}`);
@@ -263,10 +333,11 @@ class AzureIterationResolver {
       // Try common patterns as fallback
       for (const template of this.commonPatterns) {
         const testName = template.replace('{n}', number).replace('{n:02d}', number.toString().padStart(2, '0'));
-        
-        match = iterations.find(iter => 
-          iter.name?.toLowerCase() === testName.toLowerCase()
-        );
+        const testLower = testName.toLowerCase();
+        match = iterations.find(iter => {
+          const nameLower = (iter.name || '').toLowerCase();
+          return nameLower === testLower || nameLower.startsWith(testLower);
+        });
         
         if (match) {
           logger.info(`Found common pattern match: ${pattern} → ${testName} → ${match.path}`);
